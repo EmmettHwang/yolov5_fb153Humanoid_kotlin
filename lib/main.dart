@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'bluetooth/bluetooth_manager.dart';
 import 'command/command_set_manager.dart';
+import 'services/voice_command_service.dart';
 import 'ui/bluetooth/bluetooth_scan_screen.dart';
 import 'ui/control/control_screen.dart';
 
@@ -30,6 +31,7 @@ class RoboCommanderApp extends StatelessWidget {
       providers: [
         ChangeNotifierProvider(create: (_) => BluetoothManager()),
         ChangeNotifierProvider(create: (_) => CommandSetManager()),
+        ChangeNotifierProvider(create: (_) => VoiceCommandService()),
       ],
       child: MaterialApp(
         title: 'Robo Commander',

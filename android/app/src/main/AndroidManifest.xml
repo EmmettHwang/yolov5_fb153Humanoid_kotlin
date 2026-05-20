@@ -19,6 +19,9 @@
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
     <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
 
+    <!-- 마이크 권한 (음성 인식 STT) -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
     <!-- 인터넷 (MP3 URL 스트리밍) -->
     <uses-permission android:name="android.permission.INTERNET" />
 
@@ -26,6 +29,7 @@
     <uses-feature android:name="android.hardware.bluetooth" android:required="true" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
+    <uses-feature android:name="android.hardware.microphone" android:required="false" />
 
     <application
         android:label="Robo Commander"
@@ -60,4 +64,5 @@
         </intent>
     </queries>
 </manifest>
+
 

@@ -9,6 +9,7 @@ import '../settings/settings_screen.dart';
 import '../bluetooth/bluetooth_scan_screen.dart';
 import 'joystick_view.dart';
 import 'action_button_panel.dart';
+import 'voice_command_button.dart';
 
 /// 메인 제어 화면
 class ControlScreen extends StatefulWidget {
@@ -31,6 +32,9 @@ class _ControlScreenState extends State<ControlScreen>
   // 인식 결과 (시뮬레이션)
   List<DetectionResult> _detections = [];
   bool _isDetecting = false;
+
+  // YOLO 활성화 상태
+  bool _isYoloActive = false;
 
   // 현재 인식 중인 객체
   String _detectedObject = '-';
@@ -136,6 +140,15 @@ class _ControlScreenState extends State<ControlScreen>
               child: CameraPreviewWidget(
                 detections: _detections,
                 isDetecting: _isDetecting,
+                isYoloActive: _isYoloActive,
+                onYoloToggle: () {
+                  setState(() {
+                    _isYoloActive = !_isYoloActive;
+                    if (_isYoloActive) {
+                      _detectedObject = '-';
+                    }
+                  });
+                },
               ),
             ),
 
@@ -219,6 +232,13 @@ class _ControlScreenState extends State<ControlScreen>
               ),
             ),
 
+          // 음성 명령 버튼
+          const SizedBox(
+            width: 60,
+            child: VoiceCommandButton(),
+          ),
+          const SizedBox(width: 8),
+
           // 설정 버튼
           IconButton(
             icon: const Icon(Icons.settings, color: Colors.white54, size: 20),
@@ -279,11 +299,21 @@ class _ControlScreenState extends State<ControlScreen>
 
           const Spacer(),
 
-          // YOLO 인식 상태
-          _StatusChip(
-            icon: Icons.visibility,
-            label: _detectedObject == '-' ? 'YOLO 대기' : '인식: $_detectedObject',
-            color: _detectedObject == '-' ? Colors.white38 : Colors.greenAccent,
+          // YOLO 인식 상태 (탭으로 토글)
+          GestureDetector(
+            onTap: () {
+              setState(() {
+                _isYoloActive = !_isYoloActive;
+                if (!_isYoloActive) _detectedObject = '-';
+              });
+            },
+            child: _StatusChip(
+              icon: _isYoloActive ? Icons.visibility : Icons.visibility_off,
+              label: _isYoloActive
+                  ? (_detectedObject == '-' ? 'YOLO ON' : '인식: $_detectedObject')
+                  : 'YOLO OFF',
+              color: _isYoloActive ? Colors.greenAccent : Colors.white38,
+            ),
           ),
 
           const SizedBox(width: 8),

@@ -1,7 +1,7 @@
 name: robo_commander
 description: fb153 휴머노이드 로봇 Bluetooth 제어 앱
 publish_to: 'none'
-version: 1.0.0+1
+version: 0.8.250520+8
 
 environment:
   sdk: '>=3.0.0 <4.0.0'
@@ -27,6 +27,9 @@ dependencies:
 
   # HTTP
   http: 1.5.0
+
+  # 음성 인식 (STT)
+  speech_to_text: 6.6.2
 
   # Icons
   cupertino_icons: ^1.0.2

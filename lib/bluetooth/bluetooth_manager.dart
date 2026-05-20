@@ -182,42 +182,109 @@ class BluetoothManager extends ChangeNotifier {
     _setState(BtConnectionState.connecting);
     _errorMessage = null;
 
-    try {
-      _connection = await BluetoothConnection.toAddress(device.address)
-          .timeout(const Duration(seconds: 12));
+    // 최대 2회 시도 (already bonded / read failed 에러 재시도 포함)
+    for (int attempt = 1; attempt <= 2; attempt++) {
+      try {
+        if (kDebugMode) debugPrint('BT 연결 시도 $attempt: ${device.displayName}');
 
-      _connectedDevice = device;
+        _connection = await BluetoothConnection.toAddress(device.address)
+            .timeout(const Duration(seconds: 12));
 
-      // 마지막 연결 기기 저장 (자동 재연결용)
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString(_prefKeyLastMac, device.address);
-      await prefs.setString(_prefKeyLastName, device.name);
-      _lastMac = device.address;
+        _connectedDevice = device;
 
-      _setState(BtConnectionState.connected);
+        // 마지막 연결 기기 저장 (자동 재연결용)
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString(_prefKeyLastMac, device.address);
+        await prefs.setString(_prefKeyLastName, device.name);
+        _lastMac = device.address;
 
-      // 연결 끊김 감지
-      _connection!.input?.listen(
-        (_) {},
-        onDone: () {
-          if (kDebugMode) debugPrint('Bluetooth 연결 종료됨');
-          _onDisconnected();
-        },
-        onError: (e) {
-          if (kDebugMode) debugPrint('Bluetooth 오류: $e');
-          _onDisconnected();
-        },
-        cancelOnError: true,
-      );
-    } on TimeoutException {
-      _errorMessage = '연결 시간 초과 (12초) — 로봇 전원 확인';
-      _connectedDevice = null;
-      _setState(BtConnectionState.error);
-    } catch (e) {
-      _errorMessage = '연결 실패: $e';
-      _connectedDevice = null;
-      _setState(BtConnectionState.error);
+        _setState(BtConnectionState.connected);
+
+        // 연결 끊김 감지
+        _connection!.input?.listen(
+          (_) {},
+          onDone: () {
+            if (kDebugMode) debugPrint('Bluetooth 연결 종료됨');
+            _onDisconnected();
+          },
+          onError: (e) {
+            if (kDebugMode) debugPrint('Bluetooth 오류: $e');
+            _onDisconnected();
+          },
+          cancelOnError: true,
+        );
+        return; // 성공 시 종료
+
+      } on TimeoutException {
+        _errorMessage = '연결 시간 초과 (12초) — 로봇 전원 확인';
+        _connectedDevice = null;
+        _setState(BtConnectionState.error);
+        return; // 타임아웃은 재시도 없음
+
+      } on PlatformException catch (e) {
+        final msg = e.message?.toLowerCase() ?? '';
+        final isRetryable = msg.contains('already') ||
+            msg.contains('read failed') ||
+            msg.contains('socket might closed') ||
+            msg.contains('broken pipe') ||
+            msg.contains('connection was already requested') ||
+            msg.contains('bonded');
+
+        if (kDebugMode) debugPrint('BT PlatformException (시도 $attempt): ${e.message}');
+
+        if (isRetryable && attempt == 1) {
+          // "already bonded" 류 에러: 기존 소켓 정리 후 재시도
+          if (kDebugMode) debugPrint('→ already bonded 에러 감지 — 소켓 정리 후 재시도...');
+          try { await _connection?.close(); } catch (_) {}
+          _connection = null;
+          // 0.8초 대기 후 재시도 (Android BT 스택 안정화)
+          await Future.delayed(const Duration(milliseconds: 800));
+          continue; // 2회차 시도
+        }
+
+        // 재시도해도 실패하거나 다른 에러
+        _errorMessage = _buildErrorMessage(e.message);
+        _connectedDevice = null;
+        _setState(BtConnectionState.error);
+        return;
+
+      } catch (e) {
+        final msg = e.toString().toLowerCase();
+        final isRetryable = msg.contains('already') ||
+            msg.contains('read failed') ||
+            msg.contains('socket') ||
+            msg.contains('bonded');
+
+        if (isRetryable && attempt == 1) {
+          if (kDebugMode) debugPrint('→ 연결 에러 재시도: $e');
+          try { await _connection?.close(); } catch (_) {}
+          _connection = null;
+          await Future.delayed(const Duration(milliseconds: 800));
+          continue;
+        }
+
+        _errorMessage = '연결 실패: $e';
+        _connectedDevice = null;
+        _setState(BtConnectionState.error);
+        return;
+      }
     }
+  }
+
+  /// 에러 메시지를 사용자 친화적으로 변환
+  String _buildErrorMessage(String? raw) {
+    if (raw == null) return '연결 실패 — 다시 시도하세요';
+    final msg = raw.toLowerCase();
+    if (msg.contains('already') || msg.contains('bonded')) {
+      return '이미 페어링된 기기입니다. 재연결 중...';
+    }
+    if (msg.contains('read failed') || msg.contains('socket')) {
+      return 'BT 소켓 오류 — 로봇을 재시작 후 다시 연결하세요';
+    }
+    if (msg.contains('permission')) {
+      return 'Bluetooth 권한이 없습니다 — 앱 설정에서 허용하세요';
+    }
+    return '연결 실패: $raw';
   }
 
   void _onDisconnected() {

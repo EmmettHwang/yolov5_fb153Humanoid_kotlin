@@ -11,6 +11,8 @@ class CommandSetManager extends ChangeNotifier {
 
   List<ActionButtonConfig> _configs = [];
   List<ActionButtonConfig> get configs => List.unmodifiable(_configs);
+  // STT 매칭용 alias
+  List<ActionButtonConfig> get buttons => _configs;
 
   ActionButtonConfig getConfig(int buttonId) {
     return _configs.firstWhere(

@@ -5,11 +5,15 @@ import 'package:flutter/material.dart';
 class CameraPreviewWidget extends StatefulWidget {
   final List<DetectionResult> detections;
   final bool isDetecting;
+  final bool isYoloActive;
+  final VoidCallback? onYoloToggle;
 
   const CameraPreviewWidget({
     super.key,
     this.detections = const [],
     this.isDetecting = false,
+    this.isYoloActive = false,
+    this.onYoloToggle,
   });
 
   @override
@@ -22,6 +26,8 @@ class _CameraPreviewWidgetState extends State<CameraPreviewWidget>
   late Animation<double> _scanLineAnim;
   late AnimationController _pulseCtrl;
   late Animation<double> _pulseAnim;
+  late AnimationController _activateCtrl;
+  late Animation<double> _activateAnim;
 
   @override
   void initState() {
@@ -39,12 +45,22 @@ class _CameraPreviewWidgetState extends State<CameraPreviewWidget>
     _pulseAnim = Tween<double>(begin: 0.5, end: 1.0).animate(
       CurvedAnimation(parent: _pulseCtrl, curve: Curves.easeInOut),
     );
+
+    // YOLO 활성화 시 글로우 애니메이션
+    _activateCtrl = AnimationController(
+      duration: const Duration(milliseconds: 800),
+      vsync: this,
+    )..repeat(reverse: true);
+    _activateAnim = Tween<double>(begin: 0.4, end: 1.0).animate(
+      CurvedAnimation(parent: _activateCtrl, curve: Curves.easeInOut),
+    );
   }
 
   @override
   void dispose() {
     _scanLineCtrl.dispose();
     _pulseCtrl.dispose();
+    _activateCtrl.dispose();
     super.dispose();
   }
 
@@ -56,17 +72,44 @@ class _CameraPreviewWidgetState extends State<CameraPreviewWidget>
         // 카메라 배경 (실기기에서는 실제 카메라 프리뷰)
         _buildCameraBackground(),
 
+        // YOLO 활성화 시 테두리 글로우 효과
+        if (widget.isYoloActive)
+          AnimatedBuilder(
+            animation: _activateAnim,
+            builder: (context, _) => Positioned.fill(
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  border: Border.all(
+                    color: Colors.greenAccent
+                        .withValues(alpha: _activateAnim.value * 0.8),
+                    width: 2,
+                  ),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.greenAccent
+                          .withValues(alpha: _activateAnim.value * 0.3),
+                      blurRadius: 12,
+                      spreadRadius: 2,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+
         // 코너 프레임
         _buildCornerFrame(),
 
-        // 스캔 라인 애니메이션
-        AnimatedBuilder(
-          animation: _scanLineAnim,
-          builder: (context, _) => _buildScanLine(),
-        ),
+        // 스캔 라인 애니메이션 (YOLO 활성화 시만 표시)
+        if (widget.isYoloActive)
+          AnimatedBuilder(
+            animation: _scanLineAnim,
+            builder: (context, _) => _buildScanLine(),
+          ),
 
         // YOLO 인식 결과 바운딩 박스
-        ...widget.detections.map((det) => _buildDetectionBox(det)),
+        if (widget.isYoloActive)
+          ...widget.detections.map((det) => _buildDetectionBox(det)),
 
         // 상단 오버레이 (카메라 상태)
         Positioned(
@@ -77,13 +120,99 @@ class _CameraPreviewWidgetState extends State<CameraPreviewWidget>
         ),
 
         // 하단 오버레이 (추론 상태)
-        if (widget.isDetecting)
+        if (widget.isDetecting && widget.isYoloActive)
           Positioned(
             bottom: 8,
             right: 8,
             child: _buildDetectionStatus(),
           ),
+
+        // ── YOLO 토글 버튼 (중앙 하단) ──────────────────
+        Positioned(
+          bottom: 12,
+          left: 0,
+          right: 0,
+          child: Center(child: _buildYoloToggleButton()),
+        ),
       ],
+    );
+  }
+
+  /// YOLO 활성화/비활성화 토글 버튼
+  Widget _buildYoloToggleButton() {
+    final isActive = widget.isYoloActive;
+
+    return GestureDetector(
+      onTap: widget.onYoloToggle,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 300),
+        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
+        decoration: BoxDecoration(
+          color: isActive
+              ? Colors.greenAccent.withValues(alpha: 0.15)
+              : Colors.black.withValues(alpha: 0.6),
+          borderRadius: BorderRadius.circular(24),
+          border: Border.all(
+            color: isActive
+                ? Colors.greenAccent.withValues(alpha: 0.8)
+                : Colors.white.withValues(alpha: 0.25),
+            width: isActive ? 1.5 : 1.0,
+          ),
+          boxShadow: isActive
+              ? [
+                  BoxShadow(
+                    color: Colors.greenAccent.withValues(alpha: 0.3),
+                    blurRadius: 12,
+                    spreadRadius: 1,
+                  ),
+                ]
+              : null,
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            AnimatedSwitcher(
+              duration: const Duration(milliseconds: 200),
+              child: Icon(
+                isActive ? Icons.visibility : Icons.visibility_off,
+                key: ValueKey(isActive),
+                size: 16,
+                color: isActive ? Colors.greenAccent : Colors.white54,
+              ),
+            ),
+            const SizedBox(width: 7),
+            Text(
+              isActive ? 'YOLO ON' : 'YOLO OFF',
+              style: TextStyle(
+                color: isActive ? Colors.greenAccent : Colors.white54,
+                fontSize: 11,
+                fontWeight: FontWeight.bold,
+                letterSpacing: 1.5,
+                fontFamily: 'monospace',
+              ),
+            ),
+            const SizedBox(width: 8),
+            // 상태 인디케이터 점
+            AnimatedContainer(
+              duration: const Duration(milliseconds: 300),
+              width: 6,
+              height: 6,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: isActive ? Colors.greenAccent : Colors.white24,
+                boxShadow: isActive
+                    ? [
+                        BoxShadow(
+                          color: Colors.greenAccent.withValues(alpha: 0.8),
+                          blurRadius: 6,
+                        ),
+                      ]
+                    : null,
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -94,7 +223,9 @@ class _CameraPreviewWidgetState extends State<CameraPreviewWidget>
           center: Alignment.center,
           radius: 1.2,
           colors: [
-            const Color(0xFF0A1628),
+            widget.isYoloActive
+                ? const Color(0xFF0A1E14)
+                : const Color(0xFF0A1628),
             const Color(0xFF050C14),
           ],
         ),
@@ -108,15 +239,21 @@ class _CameraPreviewWidgetState extends State<CameraPreviewWidget>
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
                 Icon(
-                  Icons.camera_alt_outlined,
+                  widget.isYoloActive
+                      ? Icons.videocam
+                      : Icons.camera_alt_outlined,
                   size: 48,
-                  color: Colors.cyan.withValues(alpha: 0.5),
+                  color: widget.isYoloActive
+                      ? Colors.greenAccent.withValues(alpha: 0.5)
+                      : Colors.cyan.withValues(alpha: 0.5),
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  'CAMERA FEED',
+                  widget.isYoloActive ? 'YOLO ACTIVE' : 'CAMERA FEED',
                   style: TextStyle(
-                    color: Colors.cyan.withValues(alpha: 0.5),
+                    color: widget.isYoloActive
+                        ? Colors.greenAccent.withValues(alpha: 0.5)
+                        : Colors.cyan.withValues(alpha: 0.5),
                     fontSize: 12,
                     letterSpacing: 3,
                     fontFamily: 'monospace',
@@ -142,7 +279,11 @@ class _CameraPreviewWidgetState extends State<CameraPreviewWidget>
   Widget _buildCornerFrame() {
     return Positioned.fill(
       child: CustomPaint(
-        painter: _CornerFramePainter(),
+        painter: _CornerFramePainter(
+          color: widget.isYoloActive
+              ? Colors.greenAccent.withValues(alpha: 0.7)
+              : Colors.cyanAccent.withValues(alpha: 0.7),
+        ),
       ),
     );
   }
@@ -158,9 +299,9 @@ class _CameraPreviewWidgetState extends State<CameraPreviewWidget>
           gradient: LinearGradient(
             colors: [
               Colors.transparent,
-              Colors.cyan.withValues(alpha: 0.6),
-              Colors.cyanAccent,
-              Colors.cyan.withValues(alpha: 0.6),
+              Colors.greenAccent.withValues(alpha: 0.6),
+              Colors.greenAccent,
+              Colors.greenAccent.withValues(alpha: 0.6),
               Colors.transparent,
             ],
           ),
@@ -205,28 +346,33 @@ class _CameraPreviewWidgetState extends State<CameraPreviewWidget>
         const SizedBox(width: 6),
         _buildTag('YOLOv5s', Icons.visibility),
         const Spacer(),
-        _buildTag('10-15 FPS', Icons.speed),
+        _buildTag(
+          widget.isYoloActive ? '인식 활성' : '대기 중',
+          widget.isYoloActive ? Icons.flash_on : Icons.flash_off,
+          color: widget.isYoloActive ? Colors.greenAccent : Colors.white38,
+        ),
       ],
     );
   }
 
-  Widget _buildTag(String label, IconData icon) {
+  Widget _buildTag(String label, IconData icon, {Color? color}) {
+    final c = color ?? Colors.cyan;
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
       decoration: BoxDecoration(
         color: Colors.black.withValues(alpha: 0.6),
         borderRadius: BorderRadius.circular(4),
-        border: Border.all(color: Colors.cyan.withValues(alpha: 0.4)),
+        border: Border.all(color: c.withValues(alpha: 0.4)),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(icon, size: 10, color: Colors.cyan),
+          Icon(icon, size: 10, color: c),
           const SizedBox(width: 3),
           Text(
             label,
-            style: const TextStyle(
-              color: Colors.white,
+            style: TextStyle(
+              color: c,
               fontSize: 9,
               fontFamily: 'monospace',
             ),
@@ -276,10 +422,13 @@ class _CameraPreviewWidgetState extends State<CameraPreviewWidget>
 }
 
 class _CornerFramePainter extends CustomPainter {
+  final Color color;
+  const _CornerFramePainter({required this.color});
+
   @override
   void paint(Canvas canvas, Size size) {
     final paint = Paint()
-      ..color = Colors.cyanAccent.withValues(alpha: 0.7)
+      ..color = color
       ..strokeWidth = 2.5
       ..style = PaintingStyle.stroke;
 
@@ -309,7 +458,7 @@ class _CornerFramePainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(_) => false;
+  bool shouldRepaint(_CornerFramePainter old) => old.color != color;
 }
 
 /// 인식 결과 데이터
