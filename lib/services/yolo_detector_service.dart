@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:camera/camera.dart';
@@ -132,7 +131,9 @@ class YoloDetectorService extends ChangeNotifier {
     // throttle
     final now = DateTime.now();
     if (_lastFrame != null &&
-        now.difference(_lastFrame!).inMilliseconds < _frameGapMs) return;
+        now.difference(_lastFrame!).inMilliseconds < _frameGapMs) {
+      return;
+    }
     _lastFrame = now;
 
     _running = true;

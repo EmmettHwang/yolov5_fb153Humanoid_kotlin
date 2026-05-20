@@ -1,7 +1,7 @@
 name: robo_commander
 description: fb153 휴머노이드 로봇 Bluetooth 제어 앱
 publish_to: 'none'
-version: 1.0.250520045213+13
+version: 1.0.250520140624+14
 
 environment:
   sdk: '>=3.0.0 <4.0.0'

@@ -22,22 +22,15 @@ class DetectionResult {
 }
 
 // ─────────────────────────────────────────────────────────────────
-// CameraPreviewWidget — 실제 카메라 + TFLite YOLOv5/MobileNet SSD
+// CameraPreviewWidget — 실제 카메라 + TFLite EfficientDet-Lite0
 // ─────────────────────────────────────────────────────────────────
 class CameraPreviewWidget extends StatefulWidget {
-  /// 외부에서 주입하는 감지 결과 (YoloDetectorService에서 직접 받을 때 사용)
-  final List<DetectionResult> detections;
-  final bool isDetecting;
   final bool isYoloActive;
   final VoidCallback? onYoloToggle;
-
-  /// YOLO 서비스 (null이면 위젯 내부에서 직접 관리)
   final YoloDetectorService? yoloService;
 
   const CameraPreviewWidget({
     super.key,
-    this.detections = const [],
-    this.isDetecting = false,
     this.isYoloActive = false,
     this.onYoloToggle,
     this.yoloService,
@@ -49,177 +42,178 @@ class CameraPreviewWidget extends StatefulWidget {
 
 class _CameraPreviewWidgetState extends State<CameraPreviewWidget>
     with TickerProviderStateMixin {
-  // ── 카메라 ──────────────────────────────────────
-  CameraController? _cameraController;
-  List<CameraDescription>? _cameras;
-  bool _cameraInitialized = false;
-  bool _cameraPermissionDenied = false;
+  // ── 카메라 ───────────────────────────────────────────────────
+  CameraController? _ctrl;
+  bool _cameraReady     = false;
+  bool _permDenied      = false;
   String? _cameraError;
 
-  // ── YOLO 서비스 (내부 관리용) ──────────────────────
-  YoloDetectorService? _internalYoloService;
-  YoloDetectorService get _yoloSvc =>
-      widget.yoloService ?? (_internalYoloService ??= YoloDetectorService());
+  // ── YOLO 서비스 ─────────────────────────────────────────────
+  YoloDetectorService? _internalSvc;
+  YoloDetectorService get _svc =>
+      widget.yoloService ?? (_internalSvc ??= YoloDetectorService());
 
-  List<DetectionResult> _liveDetections = [];
-  bool _isProcessingFrame = false;
+  List<DetectionResult> _detections = [];
+  bool _streaming = false;
 
-  // ── 애니메이션 ──────────────────────────────────
+  // ── 애니메이션 ───────────────────────────────────────────────
   late AnimationController _glowCtrl;
-  late Animation<double> _glowAnim;
+  late Animation<double>   _glowAnim;
   late AnimationController _pulseCtrl;
-  late Animation<double> _pulseAnim;
+  late Animation<double>   _pulseAnim;
 
-  // ── 상태 ────────────────────────────────────────
-  bool _isYoloPrev = false;
+  // ── isYoloActive 이전값 (didUpdateWidget용) ──────────────────
+  bool _prevYolo = false;
 
+  // ─────────────────────────────────────────────────────────────
   @override
   void initState() {
     super.initState();
-    _initAnimations();
-    _initCamera();
+    _prevYolo = widget.isYoloActive;
 
-    // YOLO 서비스 변경 리스닝
-    _yoloSvc.addListener(_onYoloServiceChanged);
-  }
-
-  void _initAnimations() {
-    _glowCtrl = AnimationController(
-      duration: const Duration(milliseconds: 800),
-      vsync: this,
-    )..repeat(reverse: true);
+    _glowCtrl = AnimationController(vsync: this,
+        duration: const Duration(milliseconds: 800))..repeat(reverse: true);
     _glowAnim = Tween<double>(begin: 0.4, end: 1.0).animate(
-      CurvedAnimation(parent: _glowCtrl, curve: Curves.easeInOut),
-    );
+        CurvedAnimation(parent: _glowCtrl, curve: Curves.easeInOut));
 
-    _pulseCtrl = AnimationController(
-      duration: const Duration(milliseconds: 1200),
-      vsync: this,
-    )..repeat(reverse: true);
+    _pulseCtrl = AnimationController(vsync: this,
+        duration: const Duration(milliseconds: 1200))..repeat(reverse: true);
     _pulseAnim = Tween<double>(begin: 0.5, end: 1.0).animate(
-      CurvedAnimation(parent: _pulseCtrl, curve: Curves.easeInOut),
-    );
+        CurvedAnimation(parent: _pulseCtrl, curve: Curves.easeInOut));
+
+    _svc.addListener(_onSvcChanged);
+    _initCamera();
   }
 
-  /// 카메라 초기화 (권한 → 카메라 목록 → CameraController)
+  // ─────────────────────────────────────────────────────────────
+  // 카메라 초기화
+  // ─────────────────────────────────────────────────────────────
   Future<void> _initCamera() async {
-    // 카메라 권한 요청
     final status = await Permission.camera.request();
     if (status.isDenied || status.isPermanentlyDenied) {
-      if (mounted) {
-        setState(() => _cameraPermissionDenied = true);
-      }
+      if (mounted) setState(() => _permDenied = true);
       return;
     }
 
     try {
-      _cameras = await availableCameras();
-      if (_cameras == null || _cameras!.isEmpty) {
+      final cameras = await availableCameras();
+      if (cameras.isEmpty) {
         if (mounted) setState(() => _cameraError = '사용 가능한 카메라 없음');
         return;
       }
 
-      // 후면 카메라 선택
-      CameraDescription selectedCamera = _cameras!.firstWhere(
+      final cam = cameras.firstWhere(
         (c) => c.lensDirection == CameraLensDirection.back,
-        orElse: () => _cameras!.first,
+        orElse: () => cameras.first,
       );
 
-      _cameraController = CameraController(
-        selectedCamera,
-        ResolutionPreset.medium, // 640×480 정도
+      _ctrl = CameraController(
+        cam,
+        ResolutionPreset.medium, // 약 640×480
         enableAudio: false,
         imageFormatGroup: ImageFormatGroup.yuv420,
       );
+      await _ctrl!.initialize();
 
-      await _cameraController!.initialize();
+      if (!mounted) return;
+      setState(() => _cameraReady = true);
 
-      if (mounted) {
-        setState(() => _cameraInitialized = true);
-      }
+      // initState 때 이미 YOLO ON이면 바로 시작
+      if (widget.isYoloActive) _startYolo();
 
-      // YOLO가 이미 활성화된 경우 스트림 시작
-      if (widget.isYoloActive) {
-        await _startImageStream();
-      }
     } catch (e) {
-      if (mounted) {
-        setState(() => _cameraError = '카메라 초기화 실패: $e');
-      }
-      debugPrint('[Camera] 초기화 오류: $e');
+      if (mounted) setState(() => _cameraError = '카메라 오류: $e');
     }
   }
 
-  /// 이미지 스트림 시작 (YOLO 추론용)
-  Future<void> _startImageStream() async {
-    if (_cameraController == null || !_cameraController!.value.isInitialized) {
+  // ─────────────────────────────────────────────────────────────
+  // YOLO 시작 / 중지
+  // ─────────────────────────────────────────────────────────────
+
+  /// YOLO ON → 모델 로딩(필요시) + 스트림 시작
+  Future<void> _startYolo() async {
+    if (!_cameraReady || _ctrl == null) return;
+
+    // 1) 모델이 아직 안 로딩됐으면 시작
+    if (_svc.modelState == YoloModelState.idle) {
+      await _svc.initialize(); // 로딩 완료까지 대기
+    } else if (_svc.modelState == YoloModelState.loading) {
+      // 이미 로딩 중이면 완료 신호를 리스너(_onSvcChanged)에서 받아 처리
+      return;
+    } else if (_svc.modelState == YoloModelState.error) {
       return;
     }
-    if (_cameraController!.value.isStreamingImages) return;
 
-    // YOLO 서비스 초기화
-    if (_yoloSvc.modelState == YoloModelState.idle) {
-      _yoloSvc.initialize();
-    }
-
-    await _cameraController!.startImageStream(_onCameraFrame);
-    debugPrint('[Camera] 이미지 스트림 시작');
+    // 2) 모델 ready → 스트림 시작
+    await _startStream();
   }
 
-  /// 이미지 스트림 중지
-  Future<void> _stopImageStream() async {
-    if (_cameraController == null) return;
-    if (!_cameraController!.value.isStreamingImages) return;
+  Future<void> _startStream() async {
+    if (_ctrl == null || !_ctrl!.value.isInitialized) return;
+    if (_streaming) return;
+    if (_ctrl!.value.isStreamingImages) return;
 
     try {
-      await _cameraController!.stopImageStream();
-      if (mounted) setState(() => _liveDetections = []);
-      debugPrint('[Camera] 이미지 스트림 중지');
+      await _ctrl!.startImageStream(_onFrame);
+      _streaming = true;
+      debugPrint('[Cam] 이미지 스트림 시작');
     } catch (e) {
-      debugPrint('[Camera] 스트림 중지 오류: $e');
+      debugPrint('[Cam] 스트림 시작 오류: $e');
     }
   }
 
-  /// 카메라 프레임 콜백
-  void _onCameraFrame(CameraImage image) {
-    if (_isProcessingFrame) return;
-    if (_yoloSvc.modelState != YoloModelState.ready) return;
-
-    _isProcessingFrame = true;
-    final previewSize = _getPreviewSize();
-
-    _yoloSvc.processFrame(image, previewSize).then((_) {
-      _isProcessingFrame = false;
-    }).catchError((e) {
-      _isProcessingFrame = false;
-    });
+  Future<void> _stopYolo() async {
+    if (_ctrl == null) return;
+    if (!_ctrl!.value.isStreamingImages) { _streaming = false; return; }
+    try {
+      await _ctrl!.stopImageStream();
+      _streaming = false;
+      _svc.clearResults();
+      if (mounted) setState(() => _detections = []);
+      debugPrint('[Cam] 이미지 스트림 중지');
+    } catch (e) {
+      debugPrint('[Cam] 스트림 중지 오류: $e');
+    }
   }
 
-  /// 현재 위젯 크기를 추론 결과 좌표계로 사용
-  Size _getPreviewSize() {
+  // ─────────────────────────────────────────────────────────────
+  // 카메라 프레임 콜백
+  // ─────────────────────────────────────────────────────────────
+  void _onFrame(CameraImage image) {
+    if (_svc.modelState != YoloModelState.ready) return;
+
     final box = context.findRenderObject() as RenderBox?;
-    if (box != null) return box.size;
-    return const Size(360, 240); // fallback
+    final size = box?.size ?? const Size(360, 240);
+
+    _svc.processFrame(image, size);
   }
 
-  void _onYoloServiceChanged() {
+  // ─────────────────────────────────────────────────────────────
+  // YoloDetectorService 리스너
+  // ─────────────────────────────────────────────────────────────
+  void _onSvcChanged() {
     if (!mounted) return;
-    setState(() {
-      _liveDetections = _yoloSvc.results;
-    });
+
+    // 모델 로딩 완료 → 스트림이 아직 안 시작됐으면 시작
+    if (_svc.modelState == YoloModelState.ready &&
+        widget.isYoloActive &&
+        !_streaming) {
+      _startStream();
+    }
+
+    setState(() => _detections = List.from(_svc.results));
   }
 
+  // ─────────────────────────────────────────────────────────────
   @override
-  void didUpdateWidget(CameraPreviewWidget oldWidget) {
-    super.didUpdateWidget(oldWidget);
-
-    // YOLO 활성화 상태 변경 감지
-    if (widget.isYoloActive != _isYoloPrev) {
-      _isYoloPrev = widget.isYoloActive;
+  void didUpdateWidget(CameraPreviewWidget old) {
+    super.didUpdateWidget(old);
+    if (widget.isYoloActive != _prevYolo) {
+      _prevYolo = widget.isYoloActive;
       if (widget.isYoloActive) {
-        _startImageStream();
+        _startYolo();
       } else {
-        _stopImageStream();
+        _stopYolo();
       }
     }
   }
@@ -228,62 +222,56 @@ class _CameraPreviewWidgetState extends State<CameraPreviewWidget>
   void dispose() {
     _glowCtrl.dispose();
     _pulseCtrl.dispose();
-    _yoloSvc.removeListener(_onYoloServiceChanged);
-    _internalYoloService?.dispose();
-    _cameraController?.dispose();
+    _svc.removeListener(_onSvcChanged);
+    _internalSvc?.dispose();
+    _ctrl?.dispose();
     super.dispose();
   }
 
   // ─────────────────────────────────────────────────────────────
-  // Build
+  // BUILD
   // ─────────────────────────────────────────────────────────────
-
   @override
   Widget build(BuildContext context) {
     return Stack(
       fit: StackFit.expand,
       children: [
-        // ① 카메라 프리뷰 (또는 에러/로딩 화면)
+        // ① 카메라 or 플레이스홀더
         _buildCameraLayer(),
 
-        // ② YOLO 활성화 테두리 글로우
-        if (widget.isYoloActive) _buildActiveGlow(),
+        // ② YOLO ON 글로우 테두리
+        if (widget.isYoloActive) _buildGlow(),
 
         // ③ 코너 프레임
-        _buildCornerFrame(),
+        CustomPaint(painter: _CornerFramePainter(
+          color: widget.isYoloActive
+              ? Colors.greenAccent.withValues(alpha: 0.7)
+              : Colors.cyanAccent.withValues(alpha: 0.5),
+        )),
 
         // ④ 모델 로딩 프로그레스바
-        if (widget.isYoloActive &&
-            _yoloSvc.modelState == YoloModelState.loading)
+        if (widget.isYoloActive && _svc.modelState == YoloModelState.loading)
           _buildLoadingOverlay(),
 
-        // ⑤ 바운딩 박스 오버레이 (YOLO 활성화 + 모델 준비 완료)
+        // ⑤ 바운딩 박스 (ready + 결과 있을 때)
         if (widget.isYoloActive &&
-            _yoloSvc.modelState == YoloModelState.ready)
-          ..._buildDetectionBoxes(),
+            _svc.modelState == YoloModelState.ready &&
+            _detections.isNotEmpty)
+          Positioned.fill(child: CustomPaint(
+            painter: _DetectionPainter(detections: _detections),
+          )),
 
-        // ⑥ 상단 정보 오버레이
+        // ⑥ 상단 정보 태그
+        Positioned(top: 8, left: 8, right: 8, child: _buildTopBar()),
+
+        // ⑦ 추론 시간
+        if (widget.isYoloActive && _svc.inferenceMs > 0)
+          Positioned(bottom: 44, right: 8, child: _buildMsTag()),
+
+        // ⑧ YOLO 토글 버튼
         Positioned(
-          top: 8,
-          left: 8,
-          right: 8,
-          child: _buildTopOverlay(),
-        ),
-
-        // ⑦ 추론 시간 표시
-        if (widget.isYoloActive && _yoloSvc.modelState == YoloModelState.ready)
-          Positioned(
-            bottom: 44,
-            right: 8,
-            child: _buildInferenceTag(),
-          ),
-
-        // ⑧ YOLO 토글 버튼 (중앙 하단)
-        Positioned(
-          bottom: 12,
-          left: 0,
-          right: 0,
-          child: Center(child: _buildYoloToggleButton()),
+          bottom: 12, left: 0, right: 0,
+          child: Center(child: _buildToggleBtn()),
         ),
       ],
     );
@@ -292,35 +280,22 @@ class _CameraPreviewWidgetState extends State<CameraPreviewWidget>
   // ─────────────────────────────────────────────────────────────
   // 카메라 레이어
   // ─────────────────────────────────────────────────────────────
-
   Widget _buildCameraLayer() {
-    // 권한 거부
-    if (_cameraPermissionDenied) {
-      return _buildPlaceholder(
+    if (_permDenied) {
+      return _placeholder(
         icon: Icons.no_photography,
         title: '카메라 권한 필요',
-        subtitle: '설정 > 앱 > Robo Commander\n카메라 권한을 허용해 주세요',
-        showSettingsButton: true,
+        sub: '설정 > 앱 > Robo Commander\n카메라 권한을 허용해 주세요',
+        settingsBtn: true,
       );
     }
-
-    // 오류
     if (_cameraError != null) {
-      return _buildPlaceholder(
-        icon: Icons.error_outline,
-        title: '카메라 오류',
-        subtitle: _cameraError!,
-        color: Colors.redAccent,
-      );
+      return _placeholder(icon: Icons.error_outline,
+          title: '카메라 오류', sub: _cameraError!, color: Colors.redAccent);
     }
-
-    // 초기화 중
-    if (!_cameraInitialized || _cameraController == null) {
-      return _buildPlaceholder(
-        icon: Icons.videocam,
-        title: '카메라 초기화 중...',
-        showSpinner: true,
-      );
+    if (!_cameraReady || _ctrl == null) {
+      return _placeholder(icon: Icons.videocam,
+          title: '카메라 초기화 중...', spinner: true);
     }
 
     // 실제 카메라 프리뷰
@@ -330,77 +305,57 @@ class _CameraPreviewWidgetState extends State<CameraPreviewWidget>
         child: FittedBox(
           fit: BoxFit.cover,
           child: SizedBox(
-            width: _cameraController!.value.previewSize?.height ?? 640,
-            height: _cameraController!.value.previewSize?.width ?? 480,
-            child: CameraPreview(_cameraController!),
+            width:  _ctrl!.value.previewSize?.height ?? 640,
+            height: _ctrl!.value.previewSize?.width  ?? 480,
+            child: CameraPreview(_ctrl!),
           ),
         ),
       ),
     );
   }
 
-  Widget _buildPlaceholder({
+  Widget _placeholder({
     required IconData icon,
     required String title,
-    String? subtitle,
+    String? sub,
     Color color = Colors.cyanAccent,
-    bool showSpinner = false,
-    bool showSettingsButton = false,
+    bool spinner = false,
+    bool settingsBtn = false,
   }) {
     return Container(
       color: const Color(0xFF050C14),
       child: Center(
         child: AnimatedBuilder(
           animation: _pulseAnim,
-          builder: (context, _) => Opacity(
-            opacity: showSpinner ? 1.0 : _pulseAnim.value,
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                if (showSpinner) ...[
-                  CircularProgressIndicator(
-                    color: color,
-                    strokeWidth: 2,
-                  ),
-                  const SizedBox(height: 12),
-                ] else ...[
-                  Icon(icon, size: 44, color: color.withValues(alpha: 0.7)),
-                  const SizedBox(height: 8),
-                ],
-                Text(
-                  title,
-                  style: TextStyle(
-                    color: color,
-                    fontSize: 13,
-                    fontWeight: FontWeight.bold,
-                    letterSpacing: 1.5,
-                  ),
-                ),
-                if (subtitle != null) ...[
-                  const SizedBox(height: 6),
-                  Text(
-                    subtitle,
-                    textAlign: TextAlign.center,
-                    style: TextStyle(
-                      color: Colors.white.withValues(alpha: 0.5),
-                      fontSize: 10,
-                      height: 1.5,
-                    ),
-                  ),
-                ],
-                if (showSettingsButton) ...[
-                  const SizedBox(height: 12),
-                  TextButton.icon(
-                    onPressed: openAppSettings,
-                    icon: const Icon(Icons.settings, size: 14),
-                    label: const Text('설정 열기', style: TextStyle(fontSize: 11)),
-                    style: TextButton.styleFrom(
-                      foregroundColor: Colors.cyanAccent,
-                    ),
-                  ),
-                ],
+          builder: (_, __) => Opacity(
+            opacity: spinner ? 1.0 : _pulseAnim.value,
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              if (spinner)
+                CircularProgressIndicator(color: color, strokeWidth: 2)
+              else
+                Icon(icon, size: 44, color: color.withValues(alpha: 0.7)),
+              const SizedBox(height: 10),
+              Text(title, style: TextStyle(
+                  color: color, fontSize: 13,
+                  fontWeight: FontWeight.bold, letterSpacing: 1.2)),
+              if (sub != null) ...[
+                const SizedBox(height: 6),
+                Text(sub, textAlign: TextAlign.center,
+                    style: TextStyle(color: Colors.white.withValues(alpha: 0.5),
+                        fontSize: 10, height: 1.5)),
               ],
-            ),
+              if (settingsBtn) ...[
+                const SizedBox(height: 12),
+                TextButton.icon(
+                  onPressed: openAppSettings,
+                  icon: const Icon(Icons.settings, size: 14),
+                  label: const Text('설정 열기',
+                      style: TextStyle(fontSize: 11)),
+                  style: TextButton.styleFrom(
+                      foregroundColor: Colors.cyanAccent),
+                ),
+              ],
+            ]),
           ),
         ),
       ),
@@ -408,185 +363,99 @@ class _CameraPreviewWidgetState extends State<CameraPreviewWidget>
   }
 
   // ─────────────────────────────────────────────────────────────
-  // YOLO 로딩 오버레이
+  // 로딩 오버레이
   // ─────────────────────────────────────────────────────────────
-
   Widget _buildLoadingOverlay() {
-    final progress = _yoloSvc.loadingProgress;
+    final p = _svc.loadingProgress;
     return Positioned.fill(
       child: Container(
-        color: Colors.black.withValues(alpha: 0.65),
+        color: Colors.black.withValues(alpha: 0.70),
         child: Center(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              // 로봇 아이콘 + 펄스 애니메이션
-              AnimatedBuilder(
-                animation: _pulseAnim,
-                builder: (ctx, _) => Transform.scale(
-                  scale: 0.9 + _pulseAnim.value * 0.2,
-                  child: const Icon(
-                    Icons.smart_toy,
-                    size: 40,
-                    color: Colors.greenAccent,
-                  ),
-                ),
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            AnimatedBuilder(
+              animation: _pulseAnim,
+              builder: (_, __) => Transform.scale(
+                scale: 0.9 + _pulseAnim.value * 0.2,
+                child: const Icon(Icons.smart_toy,
+                    size: 40, color: Colors.greenAccent),
               ),
-              const SizedBox(height: 14),
-              const Text(
-                'AI 모델 로딩 중...',
-                style: TextStyle(
-                  color: Colors.white,
-                  fontSize: 14,
-                  fontWeight: FontWeight.bold,
-                  letterSpacing: 1.5,
-                ),
-              ),
-              const SizedBox(height: 4),
-              Text(
-                'EfficientDet-Lite0 COCO (80 클래스)',
-                style: TextStyle(
-                  color: Colors.white.withValues(alpha: 0.5),
-                  fontSize: 10,
-                  letterSpacing: 1,
-                ),
-              ),
-              const SizedBox(height: 16),
-              // 프로그레스 바
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 32),
-                child: Column(
-                  children: [
-                    LinearProgressIndicator(
-                      value: progress,
-                      backgroundColor: Colors.white.withValues(alpha: 0.15),
-                      valueColor: const AlwaysStoppedAnimation<Color>(
-                          Colors.greenAccent),
-                      minHeight: 4,
-                      borderRadius: BorderRadius.circular(2),
-                    ),
-                    const SizedBox(height: 6),
-                    Text(
-                      '${(progress * 100).toInt()}%',
-                      style: const TextStyle(
-                        color: Colors.greenAccent,
-                        fontSize: 11,
-                        fontFamily: 'monospace',
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  // ─────────────────────────────────────────────────────────────
-  // 바운딩 박스
-  // ─────────────────────────────────────────────────────────────
-
-  List<Widget> _buildDetectionBoxes() {
-    final detections = widget.isYoloActive && widget.detections.isNotEmpty
-        ? widget.detections
-        : _liveDetections;
-
-    if (detections.isEmpty) return [];
-
-    // CustomPaint로 모든 박스를 한번에 렌더링
-    return [
-      Positioned.fill(
-        child: CustomPaint(
-          painter: _DetectionPainter(detections: detections),
-        ),
-      ),
-    ];
-  }
-
-  // ─────────────────────────────────────────────────────────────
-  // 기타 오버레이
-  // ─────────────────────────────────────────────────────────────
-
-  Widget _buildActiveGlow() {
-    return AnimatedBuilder(
-      animation: _glowAnim,
-      builder: (context, _) => Positioned.fill(
-        child: DecoratedBox(
-          decoration: BoxDecoration(
-            border: Border.all(
-              color: Colors.greenAccent.withValues(alpha: _glowAnim.value * 0.7),
-              width: 2,
             ),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.greenAccent.withValues(alpha: _glowAnim.value * 0.2),
-                blurRadius: 10,
-                spreadRadius: 1,
-              ),
-            ],
-          ),
+            const SizedBox(height: 14),
+            const Text('AI 모델 로딩 중...',
+                style: TextStyle(color: Colors.white,
+                    fontSize: 14, fontWeight: FontWeight.bold,
+                    letterSpacing: 1.5)),
+            const SizedBox(height: 4),
+            Text('EfficientDet-Lite0  COCO 80 클래스',
+                style: TextStyle(color: Colors.white.withValues(alpha: 0.5),
+                    fontSize: 10)),
+            const SizedBox(height: 16),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 36),
+              child: Column(children: [
+                LinearProgressIndicator(
+                  value: p,
+                  backgroundColor: Colors.white.withValues(alpha: 0.15),
+                  valueColor: const AlwaysStoppedAnimation<Color>(
+                      Colors.greenAccent),
+                  minHeight: 5,
+                  borderRadius: BorderRadius.circular(3),
+                ),
+                const SizedBox(height: 6),
+                Text('${(p * 100).toInt()}%',
+                    style: const TextStyle(color: Colors.greenAccent,
+                        fontSize: 11, fontFamily: 'monospace')),
+              ]),
+            ),
+          ]),
         ),
       ),
     );
   }
 
-  Widget _buildCornerFrame() {
-    return Positioned.fill(
-      child: CustomPaint(
-        painter: _CornerFramePainter(
-          color: widget.isYoloActive
-              ? Colors.greenAccent.withValues(alpha: 0.7)
-              : Colors.cyanAccent.withValues(alpha: 0.5),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildTopOverlay() {
+  // ─────────────────────────────────────────────────────────────
+  // 상단 정보 바
+  // ─────────────────────────────────────────────────────────────
+  Widget _buildTopBar() {
+    // 상태 레이블
     String statusLabel;
     Color statusColor;
     IconData statusIcon;
 
-    switch (_yoloSvc.modelState) {
+    switch (_svc.modelState) {
       case YoloModelState.idle:
-        statusLabel = widget.isYoloActive ? '모델 준비 중' : '대기';
+        statusLabel = widget.isYoloActive ? '모델 대기' : '대기';
         statusColor = Colors.white38;
-        statusIcon = Icons.flash_off;
+        statusIcon  = Icons.flash_off;
       case YoloModelState.loading:
-        statusLabel = '로딩 중 ${(_yoloSvc.loadingProgress * 100).toInt()}%';
+        statusLabel = '로딩 ${(_svc.loadingProgress * 100).toInt()}%';
         statusColor = Colors.amber;
-        statusIcon = Icons.downloading;
+        statusIcon  = Icons.downloading;
       case YoloModelState.ready:
-        final count = _liveDetections.length;
+        final n = _detections.length;
         statusLabel = widget.isYoloActive
-            ? (count > 0 ? '인식 $count개' : '감지 중')
+            ? (n > 0 ? '인식 $n개' : '감지 중')
             : '준비 완료';
         statusColor = widget.isYoloActive ? Colors.greenAccent : Colors.white38;
-        statusIcon = widget.isYoloActive ? Icons.flash_on : Icons.flash_off;
+        statusIcon  = widget.isYoloActive ? Icons.flash_on : Icons.flash_off;
       case YoloModelState.error:
         statusLabel = '모델 오류';
         statusColor = Colors.redAccent;
-        statusIcon = Icons.error_outline;
+        statusIcon  = Icons.error_outline;
     }
 
-    return Row(
-      children: [
-        _buildTag(
-          _cameraInitialized ? '카메라 ON' : '카메라',
-          Icons.videocam,
-          color: _cameraInitialized ? Colors.cyanAccent : Colors.white38,
-        ),
-        const SizedBox(width: 6),
-        _buildTag('EfficientDet-Lite0', Icons.model_training),
-        const Spacer(),
-        _buildTag(statusLabel, statusIcon, color: statusColor),
-      ],
-    );
+    return Row(children: [
+      _tag(_cameraReady ? '카메라 ON' : '카메라',
+           Icons.videocam,
+           color: _cameraReady ? Colors.cyanAccent : Colors.white38),
+      const SizedBox(width: 6),
+      _tag('EfficientDet-Lite0', Icons.model_training),
+      const Spacer(),
+      _tag(statusLabel, statusIcon, color: statusColor),
+    ]);
   }
 
-  Widget _buildTag(String label, IconData icon, {Color? color}) {
+  Widget _tag(String label, IconData icon, {Color? color}) {
     final c = color ?? Colors.cyan;
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
@@ -595,118 +464,98 @@ class _CameraPreviewWidgetState extends State<CameraPreviewWidget>
         borderRadius: BorderRadius.circular(4),
         border: Border.all(color: c.withValues(alpha: 0.4)),
       ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(icon, size: 10, color: c),
-          const SizedBox(width: 3),
-          Text(
-            label,
-            style: TextStyle(
-              color: c,
-              fontSize: 9,
-              fontFamily: 'monospace',
-            ),
-          ),
-        ],
-      ),
+      child: Row(mainAxisSize: MainAxisSize.min, children: [
+        Icon(icon, size: 10, color: c),
+        const SizedBox(width: 3),
+        Text(label, style: TextStyle(
+            color: c, fontSize: 9, fontFamily: 'monospace')),
+      ]),
     );
   }
 
-  Widget _buildInferenceTag() {
-    final ms = _yoloSvc.inferenceMs;
+  Widget _buildMsTag() {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
       decoration: BoxDecoration(
-        color: Colors.black.withValues(alpha: 0.7),
+        color: Colors.black.withValues(alpha: 0.70),
         borderRadius: BorderRadius.circular(4),
-        border: Border.all(
-          color: Colors.greenAccent.withValues(alpha: 0.4),
-        ),
+        border: Border.all(color: Colors.greenAccent.withValues(alpha: 0.4)),
       ),
-      child: Text(
-        '${ms}ms',
-        style: const TextStyle(
-          color: Colors.greenAccent,
-          fontSize: 9,
-          fontFamily: 'monospace',
+      child: Text('${_svc.inferenceMs}ms',
+          style: const TextStyle(color: Colors.greenAccent,
+              fontSize: 9, fontFamily: 'monospace')),
+    );
+  }
+
+  Widget _buildGlow() {
+    return AnimatedBuilder(
+      animation: _glowAnim,
+      builder: (_, __) => Positioned.fill(
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            border: Border.all(
+              color: Colors.greenAccent.withValues(alpha: _glowAnim.value * 0.7),
+              width: 2,
+            ),
+          ),
         ),
       ),
     );
   }
 
-  /// YOLO 토글 버튼
-  Widget _buildYoloToggleButton() {
-    final isActive = widget.isYoloActive;
+  Widget _buildToggleBtn() {
+    final on = widget.isYoloActive;
     return GestureDetector(
       onTap: widget.onYoloToggle,
       child: AnimatedContainer(
-        duration: const Duration(milliseconds: 300),
+        duration: const Duration(milliseconds: 280),
         padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
         decoration: BoxDecoration(
-          color: isActive
+          color: on
               ? Colors.greenAccent.withValues(alpha: 0.15)
               : Colors.black.withValues(alpha: 0.65),
           borderRadius: BorderRadius.circular(24),
           border: Border.all(
-            color: isActive
-                ? Colors.greenAccent.withValues(alpha: 0.8)
+            color: on
+                ? Colors.greenAccent.withValues(alpha: 0.85)
                 : Colors.white.withValues(alpha: 0.3),
-            width: isActive ? 1.5 : 1.0,
+            width: on ? 1.5 : 1.0,
           ),
-          boxShadow: isActive
-              ? [
-                  BoxShadow(
-                    color: Colors.greenAccent.withValues(alpha: 0.3),
-                    blurRadius: 12,
-                    spreadRadius: 1,
-                  ),
-                ]
-              : null,
+          boxShadow: on ? [BoxShadow(
+            color: Colors.greenAccent.withValues(alpha: 0.3),
+            blurRadius: 12, spreadRadius: 1,
+          )] : null,
         ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            AnimatedSwitcher(
-              duration: const Duration(milliseconds: 200),
-              child: Icon(
-                isActive ? Icons.visibility : Icons.visibility_off,
-                key: ValueKey(isActive),
-                size: 16,
-                color: isActive ? Colors.greenAccent : Colors.white54,
-              ),
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          AnimatedSwitcher(
+            duration: const Duration(milliseconds: 180),
+            child: Icon(
+              on ? Icons.visibility : Icons.visibility_off,
+              key: ValueKey(on), size: 16,
+              color: on ? Colors.greenAccent : Colors.white54,
             ),
-            const SizedBox(width: 7),
-            Text(
-              isActive ? 'YOLO ON' : 'YOLO OFF',
+          ),
+          const SizedBox(width: 7),
+          Text(on ? 'YOLO ON' : 'YOLO OFF',
               style: TextStyle(
-                color: isActive ? Colors.greenAccent : Colors.white54,
-                fontSize: 11,
-                fontWeight: FontWeight.bold,
-                letterSpacing: 1.5,
-                fontFamily: 'monospace',
-              ),
+                color: on ? Colors.greenAccent : Colors.white54,
+                fontSize: 11, fontWeight: FontWeight.bold,
+                letterSpacing: 1.5, fontFamily: 'monospace',
+              )),
+          const SizedBox(width: 8),
+          AnimatedContainer(
+            duration: const Duration(milliseconds: 280),
+            width: 6, height: 6,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: on ? Colors.greenAccent : Colors.white24,
+              boxShadow: on ? [BoxShadow(
+                color: Colors.greenAccent.withValues(alpha: 0.8),
+                blurRadius: 6,
+              )] : null,
             ),
-            const SizedBox(width: 8),
-            AnimatedContainer(
-              duration: const Duration(milliseconds: 300),
-              width: 6,
-              height: 6,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: isActive ? Colors.greenAccent : Colors.white24,
-                boxShadow: isActive
-                    ? [
-                        BoxShadow(
-                          color: Colors.greenAccent.withValues(alpha: 0.8),
-                          blurRadius: 6,
-                        ),
-                      ]
-                    : null,
-              ),
-            ),
-          ],
-        ),
+          ),
+        ]),
       ),
     );
   }
@@ -717,69 +566,43 @@ class _CameraPreviewWidgetState extends State<CameraPreviewWidget>
 // ─────────────────────────────────────────────────────────────────
 class _DetectionPainter extends CustomPainter {
   final List<DetectionResult> detections;
-
   const _DetectionPainter({required this.detections});
 
-  // 클래스별 색상 팔레트
-  static const List<Color> _classColors = [
-    Colors.greenAccent,
-    Colors.cyanAccent,
-    Colors.orangeAccent,
-    Colors.pinkAccent,
-    Colors.yellowAccent,
-    Colors.lightBlueAccent,
-    Colors.tealAccent,
-    Colors.purpleAccent,
+  static const _colors = [
+    Colors.greenAccent, Colors.cyanAccent, Colors.orangeAccent,
+    Colors.pinkAccent, Colors.yellowAccent, Colors.lightBlueAccent,
+    Colors.tealAccent, Colors.purpleAccent,
   ];
 
   @override
   void paint(Canvas canvas, Size size) {
     for (final det in detections) {
-      final color = _classColors[det.classIndex % _classColors.length];
+      final color = _colors[det.classIndex % _colors.length];
 
-      // 바운딩 박스
-      final boxPaint = Paint()
-        ..color = color
-        ..strokeWidth = 2.0
-        ..style = PaintingStyle.stroke;
+      // 박스
+      canvas.drawRect(det.rect,
+          Paint()..color = color..strokeWidth = 2.0..style = PaintingStyle.stroke);
 
-      canvas.drawRect(det.rect, boxPaint);
-
-      // 레이블 배경
+      // 레이블
       final label = '${det.label} ${(det.confidence * 100).toInt()}%';
       final tp = TextPainter(
-        text: TextSpan(
-          text: ' $label ',
-          style: const TextStyle(
-            color: Colors.black,
-            fontSize: 10,
-            fontWeight: FontWeight.bold,
-            fontFamily: 'monospace',
-          ),
-        ),
+        text: TextSpan(text: ' $label ',
+            style: const TextStyle(color: Colors.black,
+                fontSize: 10, fontWeight: FontWeight.bold,
+                fontFamily: 'monospace')),
         textDirection: TextDirection.ltr,
       )..layout();
 
-      final labelH = tp.height + 2;
-      final labelTop = det.rect.top - labelH;
-      final bgRect = Rect.fromLTWH(
-        det.rect.left,
-        labelTop.clamp(0.0, size.height - labelH),
-        tp.width,
-        labelH,
-      );
-
-      canvas.drawRect(bgRect, Paint()..color = color);
-      tp.paint(
-        canvas,
-        Offset(bgRect.left, bgRect.top + 1),
-      );
+      final lh   = tp.height + 2;
+      final top  = (det.rect.top - lh).clamp(0.0, size.height - lh);
+      final bgR  = Rect.fromLTWH(det.rect.left, top, tp.width, lh);
+      canvas.drawRect(bgR, Paint()..color = color);
+      tp.paint(canvas, Offset(bgR.left, bgR.top + 1));
     }
   }
 
   @override
-  bool shouldRepaint(_DetectionPainter old) =>
-      old.detections != detections;
+  bool shouldRepaint(_DetectionPainter old) => old.detections != detections;
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -791,34 +614,23 @@ class _CornerFramePainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    final paint = Paint()
-      ..color = color
-      ..strokeWidth = 2.5
-      ..style = PaintingStyle.stroke;
-
-    const len = 20.0;
-
-    // 좌상단
-    canvas.drawLine(const Offset(8, 8), const Offset(8 + len, 8), paint);
-    canvas.drawLine(const Offset(8, 8), const Offset(8, 8 + len), paint);
-
-    // 우상단
-    canvas.drawLine(
-        Offset(size.width - 8, 8), Offset(size.width - 8 - len, 8), paint);
-    canvas.drawLine(
-        Offset(size.width - 8, 8), Offset(size.width - 8, 8 + len), paint);
-
-    // 좌하단
-    canvas.drawLine(
-        Offset(8, size.height - 8), Offset(8 + len, size.height - 8), paint);
-    canvas.drawLine(
-        Offset(8, size.height - 8), Offset(8, size.height - 8 - len), paint);
-
-    // 우하단
-    canvas.drawLine(Offset(size.width - 8, size.height - 8),
-        Offset(size.width - 8 - len, size.height - 8), paint);
-    canvas.drawLine(Offset(size.width - 8, size.height - 8),
-        Offset(size.width - 8, size.height - 8 - len), paint);
+    final p = Paint()..color = color..strokeWidth = 2.5..style = PaintingStyle.stroke;
+    const L = 20.0;
+    const O = 8.0;
+    // TL
+    canvas.drawLine(Offset(O, O), Offset(O + L, O), p);
+    canvas.drawLine(Offset(O, O), Offset(O, O + L), p);
+    // TR
+    canvas.drawLine(Offset(size.width - O, O), Offset(size.width - O - L, O), p);
+    canvas.drawLine(Offset(size.width - O, O), Offset(size.width - O, O + L), p);
+    // BL
+    canvas.drawLine(Offset(O, size.height - O), Offset(O + L, size.height - O), p);
+    canvas.drawLine(Offset(O, size.height - O), Offset(O, size.height - O - L), p);
+    // BR
+    canvas.drawLine(Offset(size.width - O, size.height - O),
+        Offset(size.width - O - L, size.height - O), p);
+    canvas.drawLine(Offset(size.width - O, size.height - O),
+        Offset(size.width - O, size.height - O - L), p);
   }
 
   @override

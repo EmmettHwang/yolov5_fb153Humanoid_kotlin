@@ -9,9 +9,9 @@
 
 | 항목 | 내용 |
 |------|------|
-| **버전** | `1.0.250520043801` (build 12) — 최신 |
-| **빌드 날짜** | 2025-05-20 04:38 |
-| **APK 크기** | 47 MB (arm64) |
+| **버전** | `1.0.250520140624` (build 14) — 최신 |
+| **빌드 날짜** | 2025-05-20 14:06 KST |
+| **APK 크기** | 58.9 MB (arm64) |
 | **패키지** | `com.robocommander.control` |
 | **Min SDK** | Android 8.0 (API 26) |
 
@@ -39,8 +39,9 @@
 
 | 버전 | 빌드 시각 | 주요 변경 내용 |
 |------|-----------|----------------|
-| **1.0.250520043801** | 2025-05-20 04:38 | 버전 체계 변경 (년월일 → 년월일시분초) |
-| 1.0.250520 | 2025-05-20 | 실제 카메라 + MobileNet SSD TFLite 사물인식, BT 권한 개선, tflite_flutter 패치 |
+| **1.0.250520140624** | 2025-05-20 14:06 KST | EfficientDet-Lite0 교체, 추론 0ms 버그 수정, KST 버전 타임스탬프 |
+| 1.0.250520043801 | 2025-05-20 04:38 | 버전 체계 변경 (년월일 → 년월일시분초) |
+| 1.0.250520 | 2025-05-20 | 실제 카메라 + TFLite 사물인식, BT 권한 개선, tflite_flutter Dart 3.9 패치 |
 | 1.0.250520 | 2025-05-20 | 메이저 버전 1.0 릴리스, BT 기기 인식 오류 수정, 메인 화면 우선 진입 |
 | 0.9.250520 | 2025-05-20 | README 전면 정리, 릴리스 패키징 완료 |
 | 0.8.250520 | 2025-05-20 | YOLO 토글 버튼, 음성 인식(STT) 통합, BT already bonded 에러 해결 |
@@ -67,11 +68,12 @@
 
 ### 📷 카메라 + AI 사물인식 (YOLO)
 - **실제 카메라 피드** — `CameraController`로 후면 카메라 실시간 표시 (시뮬레이션 아님)
-- **TFLite 추론** — MobileNet SSD v1 COCO (4MB, 80 클래스) 온디바이스 추론
+- **TFLite 추론** — EfficientDet-Lite0 (Google MediaPipe 공식, 13.2MB, COCO 80 클래스) 온디바이스 추론
 - **모델 로딩 프로그레스바** — 앱 내 모델 초기화 중 `LinearProgressIndicator` + % 표시
 - **바운딩 박스 오버레이** — 인식된 객체에 클래스별 색상 바운딩 박스 + 레이블/신뢰도 표시
 - **YOLO 토글** — 카메라 뷰 하단 버튼 탭 → 즉시 ON/OFF (상태바 탭도 동일 동작)
-- **10fps 추론** — 100ms 간격 프레임 throttle, compute() isolate로 UI 비블로킹
+- **8fps 추론** — 125ms 간격 프레임 throttle, compute() isolate로 UI 비블로킹
+- **추론 0ms 버그 수정** — `initialize()` await 완료 후 스트림 시작, 모델 ready 시 자동 재시작
 - **추론 시간 표시** — 오버레이에 실시간 ms 단위 표시
 
 ### 🕹️ 제어 인터페이스
@@ -176,9 +178,8 @@ lib/
 
 assets/
 ├── models/
-│   ├── yolov5s.tflite                  # MobileNet SSD v1 COCO (4MB, 80 클래스)
-│   ├── labels.txt                      # COCO 80 클래스 레이블
-│   └── coco_labels.txt                 # COCO 80 클래스 레이블 (예비)
+│   ├── efficientdet_lite0.tflite       # EfficientDet-Lite0 Google MediaPipe 공식 (13.2MB)
+│   └── labels.txt                      # COCO 80 클래스 레이블
 ├── sounds/                             # 효과음 (확장용)
 └── images/                             # 이미지 리소스 (확장용)
 ```
@@ -201,6 +202,9 @@ assets/
 | TFLite `UnmodifiableUint8ListView` Dart 3.9 오류 | 1.0 | ✅ | pub-cache `tensor.dart` 패치 → `Uint8List.fromList()` 로 교체 |
 | `getBondedDevices()` Android 12+에서 실패 | 1.0 | ✅ | `BLUETOOTH_CONNECT` 런타임 권한 선확인 후 호출 |
 | 모델 로딩 중 UI 피드백 없음 | 1.0 | ✅ | `YoloModelState.loading` + `loadingProgress` → `LinearProgressIndicator` 표시 |
+| 가짜 모델(`yolov5s.tflite` = MobileNet SSD) 배치 | 1.0 | ✅ | 올바른 EfficientDet-Lite0 (13.2MB) 로 완전 교체 |
+| 추론 0ms — 실제 인식 안 됨 | 1.0 | ✅ | `initialize()` await 추가 + `_onSvcChanged()`에서 ready 시 스트림 자동 재시작 |
+| 버전 타임스탬프 UTC로 표기 | 1.0 | ✅ | `TZ='Asia/Seoul'` 고정, 연도 `25` 하드코딩 (샌드박스 시계 오류 우회) |
 
 ---
 
