@@ -43,3 +43,14 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Signing keys (보안 - 절대 커밋 금지)
+*.jks
+*.keystore
+android/key.properties
+
+# APK / ZIP 빌드 결과물
+*.apk
+*.aab
+*.zip
+android/app/build.gradle.kts.bak
