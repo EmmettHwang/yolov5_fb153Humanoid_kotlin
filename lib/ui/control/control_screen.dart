@@ -201,9 +201,9 @@ class _ControlScreenState extends State<ControlScreen>
         children: [
           // 로봇 아이콘 + 앱 이름
           const Icon(Icons.smart_toy, color: Colors.cyanAccent, size: 20),
-          const SizedBox(width: 8),
+          const SizedBox(width: 6),
           const Text(
-            'ROBO COMMANDER',
+            'ROBO',
             style: TextStyle(
               color: Colors.white,
               fontSize: 14,
@@ -211,22 +211,73 @@ class _ControlScreenState extends State<ControlScreen>
               letterSpacing: 1.5,
             ),
           ),
+          const SizedBox(width: 4),
+
+          // ── BT 연결 버튼 (항상 표시, 상태에 따라 색상 변경) ──
+          GestureDetector(
+            onTap: _openBluetoothScan,
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 300),
+              padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+              decoration: BoxDecoration(
+                color: btManager.isConnected
+                    ? Colors.greenAccent.withValues(alpha: 0.12)
+                    : Colors.redAccent.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(6),
+                border: Border.all(
+                  color: btManager.isConnected
+                      ? Colors.greenAccent.withValues(alpha: 0.7)
+                      : Colors.redAccent.withValues(alpha: 0.7),
+                  width: 1,
+                ),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    btManager.isConnected
+                        ? Icons.bluetooth_connected
+                        : Icons.bluetooth_disabled,
+                    size: 13,
+                    color: btManager.isConnected
+                        ? Colors.greenAccent
+                        : Colors.redAccent,
+                  ),
+                  const SizedBox(width: 4),
+                  Text(
+                    btManager.isConnected
+                        ? (btManager.connectedDevice?.macSuffix ?? 'BT')
+                        : 'BT 연결',
+                    style: TextStyle(
+                      color: btManager.isConnected
+                          ? Colors.greenAccent
+                          : Colors.redAccent,
+                      fontSize: 11,
+                      fontWeight: FontWeight.bold,
+                      letterSpacing: 0.5,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+
           const Spacer(),
 
-          // 패킷 카운터
+          // 패킷 카운터 (연결 시)
           if (btManager.isConnected)
             Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-              margin: const EdgeInsets.only(right: 8),
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+              margin: const EdgeInsets.only(right: 6),
               decoration: BoxDecoration(
-                color: Colors.green.withValues(alpha: 0.15),
+                color: Colors.green.withValues(alpha: 0.12),
                 borderRadius: BorderRadius.circular(4),
               ),
               child: Text(
-                'TX: ${btManager.packetsSent}',
+                'TX:${btManager.packetsSent}',
                 style: const TextStyle(
                   color: Colors.greenAccent,
-                  fontSize: 10,
+                  fontSize: 9,
                   fontFamily: 'monospace',
                 ),
               ),
@@ -234,10 +285,10 @@ class _ControlScreenState extends State<ControlScreen>
 
           // 음성 명령 버튼
           const SizedBox(
-            width: 60,
+            width: 58,
             child: VoiceCommandButton(),
           ),
-          const SizedBox(width: 8),
+          const SizedBox(width: 6),
 
           // 설정 버튼
           IconButton(
@@ -256,17 +307,18 @@ class _ControlScreenState extends State<ControlScreen>
     final deviceName = btManager.connectedDevice?.name ?? '-';
 
     return Container(
-      height: 34,
+      height: 30,
       padding: const EdgeInsets.symmetric(horizontal: 12),
       color: const Color(0xFF0A1628),
       child: Row(
         children: [
-          // 연결 상태
-          Container(
-            width: 7,
-            height: 7,
+          // 연결 상태 도트
+          AnimatedContainer(
+            duration: const Duration(milliseconds: 300),
+            width: 6,
+            height: 6,
             decoration: BoxDecoration(
-              color: isConnected ? Colors.greenAccent : Colors.redAccent,
+              color: isConnected ? Colors.greenAccent : Colors.white24,
               shape: BoxShape.circle,
               boxShadow: isConnected
                   ? [
@@ -278,18 +330,20 @@ class _ControlScreenState extends State<ControlScreen>
                   : null,
             ),
           ),
-          const SizedBox(width: 6),
-          Text(
-            isConnected ? deviceName : '연결 안됨',
-            style: TextStyle(
-              color: isConnected ? Colors.greenAccent : Colors.white38,
-              fontSize: 11,
-              fontWeight: FontWeight.w600,
+          const SizedBox(width: 5),
+          Flexible(
+            child: Text(
+              isConnected ? deviceName : '블루투스 미연결 — 헤더 BT 버튼으로 연결',
+              style: TextStyle(
+                color: isConnected ? Colors.greenAccent : Colors.white30,
+                fontSize: 10,
+                fontWeight: isConnected ? FontWeight.w600 : FontWeight.normal,
+              ),
+              overflow: TextOverflow.ellipsis,
             ),
           ),
 
-          if (isConnected) ...[
-            const SizedBox(width: 12),
+          if (isConnected) ...[const SizedBox(width: 8),
             _StatusChip(
               icon: Icons.timer_outlined,
               label: '${btManager.latencyMs}ms',
@@ -299,7 +353,7 @@ class _ControlScreenState extends State<ControlScreen>
 
           const Spacer(),
 
-          // YOLO 인식 상태 (탭으로 토글)
+          // YOLO 토글 칩 (탭으로 즉시 ON/OFF)
           GestureDetector(
             onTap: () {
               setState(() {
@@ -312,32 +366,9 @@ class _ControlScreenState extends State<ControlScreen>
               label: _isYoloActive
                   ? (_detectedObject == '-' ? 'YOLO ON' : '인식: $_detectedObject')
                   : 'YOLO OFF',
-              color: _isYoloActive ? Colors.greenAccent : Colors.white38,
+              color: _isYoloActive ? Colors.greenAccent : Colors.white30,
             ),
           ),
-
-          const SizedBox(width: 8),
-
-          // 연결 버튼 (미연결 시)
-          if (!isConnected)
-            GestureDetector(
-              onTap: _openBluetoothScan,
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                decoration: BoxDecoration(
-                  border: Border.all(color: Colors.cyanAccent, width: 1),
-                  borderRadius: BorderRadius.circular(4),
-                ),
-                child: const Text(
-                  '연결',
-                  style: TextStyle(
-                    color: Colors.cyanAccent,
-                    fontSize: 10,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-              ),
-            ),
         ],
       ),
     );

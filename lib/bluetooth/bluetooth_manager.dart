@@ -33,10 +33,11 @@ class BluetoothDeviceInfo {
   /// 표시 이름: "fb153 [AA:BB]"
   String get displayName => '$name  [$macSuffix]';
 
-  /// fb153 로봇 여부
-  bool get isFb153Robot =>
-      name.toLowerCase().contains('fb153') ||
-      name.toLowerCase().contains('robot');
+  /// fb153 로봇 여부 (FB153 v1.0.0 등 대소문자·공백 무시)
+  bool get isFb153Robot {
+    final n = name.toLowerCase().replaceAll(' ', '');
+    return n.contains('fb153') || n.contains('robot');
+  }
 
   @override
   String toString() => displayName;
@@ -130,13 +131,16 @@ class BluetoothManager extends ChangeNotifier {
     try {
       final bonded = await FlutterBluetoothSerial.instance.getBondedDevices();
 
-      // 1차: fb153 이름 필터
+      // fb153 관련 기기 필터 (대소문자 무시, 공백 제거 후 매칭)
+      // 예: "fb153", "FB153", "FB153 v1.0.0", "FB153_v2" 모두 매칭
       final fb153List = bonded.where((d) {
-        final n = (d.name ?? '').toLowerCase();
-        return filterPrefix.isEmpty || n.contains(filterPrefix.toLowerCase());
+        if (filterPrefix.isEmpty) return true;
+        final n = (d.name ?? '').toLowerCase().replaceAll(' ', '');
+        final f = filterPrefix.toLowerCase().replaceAll(' ', '');
+        return n.contains(f);
       }).toList();
 
-      // fb153이 있으면 해당 목록만, 없으면 전체 페어링 기기 표시
+      // fb153 기기가 있으면 해당 목록만, 없으면 전체 페어링 기기 표시
       final targetList = fb153List.isNotEmpty ? fb153List : bonded;
 
       for (final d in targetList) {

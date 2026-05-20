@@ -310,15 +310,15 @@ class _BluetoothScanScreenState extends State<BluetoothScanScreen>
   Widget _buildEmptyState(BluetoothManager btManager) {
     return Center(
       child: Padding(
-        padding: const EdgeInsets.all(32),
+        padding: const EdgeInsets.all(28),
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             Icon(Icons.bluetooth_disabled,
-                size: 64, color: Colors.white.withValues(alpha: 0.2)),
-            const SizedBox(height: 20),
+                size: 56, color: Colors.white.withValues(alpha: 0.2)),
+            const SizedBox(height: 16),
             Text(
-              '페어링된 fb153 기기 없음',
+              'fb153 기기를 찾지 못했습니다',
               style: TextStyle(
                 color: Colors.white.withValues(alpha: 0.7),
                 fontSize: 16,
@@ -326,16 +326,58 @@ class _BluetoothScanScreenState extends State<BluetoothScanScreen>
               ),
             ),
             const SizedBox(height: 12),
-            Text(
-              '스마트폰 블루투스 설정에서\nfb153 로봇을 먼저 페어링하세요.\n\nPIN 코드: 1234 (또는 0000)',
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                color: Colors.white.withValues(alpha: 0.45),
-                fontSize: 13,
-                height: 1.6,
+
+            // 기기 이름 안내 박스
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              decoration: BoxDecoration(
+                color: Colors.amber.withValues(alpha: 0.08),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: Colors.amber.withValues(alpha: 0.4)),
+              ),
+              child: Column(
+                children: [
+                  Row(
+                    children: [
+                      const Icon(Icons.info_outline, size: 14, color: Colors.amber),
+                      const SizedBox(width: 6),
+                      Text(
+                        '기기 이름 확인',
+                        style: TextStyle(
+                          color: Colors.amber.withValues(alpha: 0.9),
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    '안드로이드 BT 설정의 기기 이름이\n"FB153 v1.0.0" 형태인지 확인하세요.\n(fb153, FB153, FB153 v1.0.0 모두 인식됩니다)',
+                    textAlign: TextAlign.left,
+                    style: TextStyle(
+                      color: Colors.white.withValues(alpha: 0.5),
+                      fontSize: 11,
+                      height: 1.5,
+                    ),
+                  ),
+                ],
               ),
             ),
-            const SizedBox(height: 28),
+
+            const SizedBox(height: 10),
+            Text(
+              '로봇이 페어링되어 있다면 아래\n"전체 기기 보기"를 눌러 선택하세요.',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                color: Colors.white.withValues(alpha: 0.4),
+                fontSize: 12,
+                height: 1.5,
+              ),
+            ),
+            const SizedBox(height: 20),
+
+            // 다시 스캔
             ElevatedButton.icon(
               style: ElevatedButton.styleFrom(
                 backgroundColor: Colors.cyanAccent,
@@ -349,7 +391,23 @@ class _BluetoothScanScreenState extends State<BluetoothScanScreen>
                   style: TextStyle(fontWeight: FontWeight.bold)),
               onPressed: () => btManager.startScan(),
             ),
-            const SizedBox(height: 12),
+            const SizedBox(height: 8),
+
+            // 전체 기기 보기 (필터 없이)
+            OutlinedButton.icon(
+              style: OutlinedButton.styleFrom(
+                foregroundColor: Colors.white60,
+                side: const BorderSide(color: Colors.white24),
+                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10)),
+              ),
+              icon: const Icon(Icons.list, size: 16),
+              label: const Text('전체 기기 보기', style: TextStyle(fontSize: 12)),
+              onPressed: () => btManager.startScan(filterPrefix: ''),
+            ),
+            const SizedBox(height: 8),
+
             TextButton(
               onPressed: _openSystemBluetooth,
               child: Text(

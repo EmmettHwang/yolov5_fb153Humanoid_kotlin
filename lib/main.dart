@@ -103,7 +103,7 @@ class _SplashScreenState extends State<SplashScreen>
   late Animation<double> _fadeAnim;
   late Animation<double> _scaleAnim;
 
-  String _statusText = '초기화 중...';
+  String _statusText = '시작하는 중...';
 
   @override
   void initState() {
@@ -128,33 +128,19 @@ class _SplashScreenState extends State<SplashScreen>
     if (!mounted) return;
     final btManager = context.read<BluetoothManager>();
 
-    // 1. BluetoothManager 초기화 (마지막 기기 복원)
+    // 1. BluetoothManager 초기화 (마지막 기기 MAC 복원)
     await btManager.init();
 
-    // 2. Bluetooth 활성화 확인
-    final btEnabled = await btManager.isBluetoothEnabled();
-    if (!btEnabled) {
-      _goToBluetoothScan(); // BT 꺼져 있으면 스캔 화면으로
-      return;
-    }
-
-    // 3. 마지막 연결 기기가 있으면 자동 재연결 시도
+    // 2. 마지막 연결 기기가 있으면 백그라운드 자동 재연결 시도
+    //    → 성공/실패 관계없이 항상 메인 제어 화면으로 직행
     if (btManager.lastMac != null) {
-      if (mounted) setState(() => _statusText = '마지막 로봇에 재연결 중...');
-
-      final reconnected = await btManager.tryAutoReconnect();
-
-      if (reconnected && mounted) {
-        // 자동 재연결 성공 → 바로 제어 화면
-        _goToControl();
-      } else if (mounted) {
-        // 재연결 실패 → 스캔 화면
-        _goToBluetoothScan();
-      }
-    } else {
-      // 처음 실행 → 스캔 화면
-      _goToBluetoothScan();
+      if (mounted) setState(() => _statusText = '마지막 로봇 재연결 시도 중...');
+      // 백그라운드로 연결 시도 (결과를 기다리지 않음)
+      btManager.tryAutoReconnect();
     }
+
+    // 3. 항상 메인 제어 화면으로 이동 (BT 연결은 선택 사항)
+    _goToControl();
   }
 
   void _goToControl() {
@@ -170,19 +156,6 @@ class _SplashScreenState extends State<SplashScreen>
     );
   }
 
-  void _goToBluetoothScan() {
-    if (!mounted) return;
-    Navigator.pushReplacement(
-      context,
-      PageRouteBuilder(
-        pageBuilder: (_, __, ___) =>
-            const BluetoothScanScreen(isFirstLaunch: true),
-        transitionsBuilder: (_, anim, __, child) =>
-            FadeTransition(opacity: anim, child: child),
-        transitionDuration: const Duration(milliseconds: 500),
-      ),
-    );
-  }
 
   @override
   void dispose() {
