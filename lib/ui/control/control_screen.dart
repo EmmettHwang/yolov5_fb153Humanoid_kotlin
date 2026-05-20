@@ -4,9 +4,13 @@ import '../../bluetooth/bluetooth_manager.dart';
 import '../../bluetooth/motion_repeater.dart';
 import '../../command/command_set_manager.dart';
 import '../../models/action_button_config.dart';
+import '../../models/yolo_action_config.dart';
+import '../../services/audio_service.dart';
+import '../../services/robot_name_service.dart';
 import '../../services/yolo_detector_service.dart';
 import '../camera/camera_preview_widget.dart';
 import '../settings/settings_screen.dart';
+import '../settings/vision_settings_screen.dart';
 import '../bluetooth/bluetooth_scan_screen.dart';
 import 'joystick_view.dart';
 import 'action_button_panel.dart';
@@ -30,16 +34,14 @@ class _ControlScreenState extends State<ControlScreen>
     ...JoystickOutput.defaultMotionMap,
   };
 
-  // YOLO 서비스 (실제 TFLite 추론)
+  // YOLO 서비스
   late YoloDetectorService _yoloService;
-
-  // YOLO 활성화 상태
   bool _isYoloActive = false;
-
-  // 현재 인식 중인 객체 (YOLO 결과에서 가져옴)
   String _detectedObject = '-';
 
-
+  // YOLO 동작 실행 쿨다운 (너무 자주 실행 방지, 3초)
+  DateTime? _lastYoloActionTime;
+  static const _yoloCooldown = Duration(seconds: 3);
 
   @override
   void initState() {
@@ -48,7 +50,6 @@ class _ControlScreenState extends State<ControlScreen>
     _motionRepeater = MotionRepeater(btManager);
     context.read<CommandSetManager>().load();
 
-    // YoloDetectorService 초기화 (모델은 YOLO 활성화 시점에 로딩)
     _yoloService = YoloDetectorService();
     _yoloService.addListener(_onYoloResultsChanged);
   }
@@ -67,28 +68,77 @@ class _ControlScreenState extends State<ControlScreen>
     final results = _yoloService.results;
     setState(() {
       if (results.isNotEmpty) {
-        // 신뢰도 가장 높은 객체를 상태바에 표시
         final best = results.reduce(
           (a, b) => a.confidence > b.confidence ? a : b,
         );
         _detectedObject = best.label;
+        // YOLO 동작 트리거
+        _triggerYoloAction(best.label);
       } else {
         _detectedObject = '-';
       }
     });
   }
 
+  /// YOLO 인식 라벨에 매칭되는 동작 실행 (쿨다운 적용)
+  void _triggerYoloAction(String label) {
+    final now = DateTime.now();
+    if (_lastYoloActionTime != null &&
+        now.difference(_lastYoloActionTime!) < _yoloCooldown) {
+      return;
+    }
+
+    final yoloManager = context.read<YoloActionManager>();
+    final matched = yoloManager.matchLabel(label);
+    if (matched == null) { return; }
+
+    _lastYoloActionTime = now;
+
+    // 오디오 재생
+    if (matched.hasAudio) {
+      AudioService().playForButton(
+        mp3FilePath: matched.mp3FilePath,
+        ttsText: matched.ttsText,
+      );
+    }
+
+    // 모션 실행 (BT 연결 시)
+    final btManager = context.read<BluetoothManager>();
+    final cmdManager = context.read<CommandSetManager>();
+    if (btManager.isConnected && matched.motionIndex > 0) {
+      // YoloActionConfig → ActionButtonConfig 래핑
+      final fakeConfig = ActionButtonConfig(
+        id: 0,
+        label: matched.label,
+        motionIndex: matched.motionIndex,
+        color: 0xFF00BCD4,
+        commandSequence: matched.commandSequence,
+        mp3FilePath: matched.mp3FilePath,
+        ttsText: matched.ttsText,
+      );
+      cmdManager.executeCommandSet(fakeConfig, btManager,
+          yoloService: _yoloService);
+    }
+  }
+
   void _onJoystickMove(JoystickOutput output) {
     if (!context.read<BluetoothManager>().isConnected) return;
-
     if (output.direction == _lastDirection) return;
     _lastDirection = output.direction;
 
     if (output.direction == JoystickDirection.stop || output.power < 0.15) {
       _motionRepeater.stop(returnMotion: 1);
     } else {
-      final motionIndex = _joystickMotionMap[output.direction] ?? 1;
-      _motionRepeater.start(motionIndex, intervalMs: 50);
+      final dir = output.direction;
+      // 전진: 2→3→4 시퀀스, 후진: 9→10→11 시퀀스
+      if (dir == JoystickDirection.forward) {
+        _motionRepeater.startSequence([2, 3, 4]);
+      } else if (dir == JoystickDirection.backward) {
+        _motionRepeater.startSequence([9, 10, 11]);
+      } else {
+        final motionIndex = _joystickMotionMap[dir] ?? 1;
+        _motionRepeater.start(motionIndex, intervalMs: 50);
+      }
     }
   }
 
@@ -104,7 +154,7 @@ class _ControlScreenState extends State<ControlScreen>
       _showConnectSnackBar();
       return;
     }
-    cmdManager.executeCommandSet(config, btManager);
+    cmdManager.executeCommandSet(config, btManager, yoloService: _yoloService);
   }
 
   void _showConnectSnackBar() {
@@ -128,7 +178,6 @@ class _ControlScreenState extends State<ControlScreen>
     );
   }
 
-  /// Bluetooth 스캔 화면 직접 열기
   void _openBluetoothScan() {
     Navigator.push(
       context,
@@ -138,11 +187,17 @@ class _ControlScreenState extends State<ControlScreen>
     );
   }
 
-  /// 설정 화면 열기 (버튼 편집 등)
   void _openSettings() {
     Navigator.push(
       context,
       MaterialPageRoute(builder: (_) => const SettingsScreen()),
+    );
+  }
+
+  void _openVisionSettings() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const VisionSettingsScreen()),
     );
   }
 
@@ -156,7 +211,7 @@ class _ControlScreenState extends State<ControlScreen>
       body: SafeArea(
         child: Column(
           children: [
-            // ─── 상단 헤더 (앱바) ───
+            // ─── 상단 헤더 ───
             _buildHeader(btManager),
 
             // ─── 카메라 프리뷰 (46%) ───
@@ -168,18 +223,16 @@ class _ControlScreenState extends State<ControlScreen>
                 onYoloToggle: () {
                   setState(() {
                     _isYoloActive = !_isYoloActive;
-                    if (!_isYoloActive) {
-                      _detectedObject = '-';
-                    }
+                    if (!_isYoloActive) _detectedObject = '-';
                   });
                 },
               ),
             ),
 
-            // ─── 상태바 (5%) ───
+            // ─── 상태바 ───
             _buildStatusBar(btManager),
 
-            // ─── 조이스틱 + 액션 버튼 (하단 40%) ───
+            // ─── 조이스틱 + 액션 버튼 패널 (Expanded) ───
             Expanded(
               child: Row(
                 children: [
@@ -194,10 +247,18 @@ class _ControlScreenState extends State<ControlScreen>
                     color: Colors.white.withValues(alpha: 0.1),
                   ),
 
-                  // 액션 버튼 (우측)
+                  // 액션 버튼 (우측) — 버튼패널 + 음성버튼
                   Expanded(
-                    child: ActionButtonPanel(
-                      onButtonPressed: _onActionButton,
+                    child: Column(
+                      children: [
+                        Expanded(
+                          child: ActionButtonPanel(
+                            onButtonPressed: _onActionButton,
+                          ),
+                        ),
+                        // ─── 음성 명령 버튼 (버튼 패널 아래) ───
+                        _buildVoiceRow(),
+                      ],
                     ),
                   ),
                 ],
@@ -209,26 +270,46 @@ class _ControlScreenState extends State<ControlScreen>
     );
   }
 
+  /// 음성 명령 버튼 행 (버튼 패널 아래 배치)
+  Widget _buildVoiceRow() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: const Color(0xFF0A1628),
+        border: Border(
+          top: BorderSide(color: Colors.white.withValues(alpha: 0.08)),
+        ),
+      ),
+      child: const Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          VoiceCommandButton(),
+        ],
+      ),
+    );
+  }
+
   Widget _buildHeader(BluetoothManager btManager) {
+    // 로봇 이름 동적으로 읽기
+    final robotName = context.watch<RobotNameService>().name;
+
     return Container(
       height: 48,
       padding: const EdgeInsets.symmetric(horizontal: 12),
       decoration: BoxDecoration(
         color: const Color(0xFF0D1F2D),
         border: Border(
-          bottom: BorderSide(
-            color: Colors.cyan.withValues(alpha: 0.2),
-          ),
+          bottom: BorderSide(color: Colors.cyan.withValues(alpha: 0.2)),
         ),
       ),
       child: Row(
         children: [
-          // 로봇 아이콘 + 앱 이름
+          // 로봇 아이콘 + 이름
           const Icon(Icons.smart_toy, color: Colors.cyanAccent, size: 20),
           const SizedBox(width: 6),
-          const Text(
-            'ROBO',
-            style: TextStyle(
+          Text(
+            robotName,
+            style: const TextStyle(
               color: Colors.white,
               fontSize: 14,
               fontWeight: FontWeight.bold,
@@ -237,7 +318,7 @@ class _ControlScreenState extends State<ControlScreen>
           ),
           const SizedBox(width: 4),
 
-          // ── BT 연결 버튼 (항상 표시, 상태에 따라 색상 변경) ──
+          // BT 연결 버튼
           GestureDetector(
             onTap: _openBluetoothScan,
             child: AnimatedContainer(
@@ -288,7 +369,7 @@ class _ControlScreenState extends State<ControlScreen>
 
           const Spacer(),
 
-          // 패킷 카운터 (연결 시)
+          // 패킷 카운터
           if (btManager.isConnected)
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
@@ -307,16 +388,22 @@ class _ControlScreenState extends State<ControlScreen>
               ),
             ),
 
-          // 음성 명령 버튼
-          const SizedBox(
-            width: 58,
-            child: VoiceCommandButton(),
+          // 비전 설정 버튼 (새로 추가)
+          IconButton(
+            icon:
+                const Icon(Icons.remove_red_eye, color: Colors.cyanAccent, size: 20),
+            tooltip: '비전 설정',
+            onPressed: _openVisionSettings,
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(),
           ),
-          const SizedBox(width: 6),
+          const SizedBox(width: 8),
 
           // 설정 버튼
           IconButton(
-            icon: const Icon(Icons.settings, color: Colors.white54, size: 20),
+            icon:
+                const Icon(Icons.settings, color: Colors.white54, size: 20),
+            tooltip: '설정',
             onPressed: _openSettings,
             padding: EdgeInsets.zero,
             constraints: const BoxConstraints(),
@@ -336,7 +423,6 @@ class _ControlScreenState extends State<ControlScreen>
       color: const Color(0xFF0A1628),
       child: Row(
         children: [
-          // 연결 상태 도트
           AnimatedContainer(
             duration: const Duration(milliseconds: 300),
             width: 6,
@@ -366,18 +452,16 @@ class _ControlScreenState extends State<ControlScreen>
               overflow: TextOverflow.ellipsis,
             ),
           ),
-
-          if (isConnected) ...[const SizedBox(width: 8),
+          if (isConnected) ...[
+            const SizedBox(width: 8),
             _StatusChip(
               icon: Icons.timer_outlined,
               label: '${btManager.latencyMs}ms',
               color: Colors.cyanAccent,
             ),
           ],
-
           const Spacer(),
-
-          // YOLO 토글 칩 (탭으로 즉시 ON/OFF)
+          // YOLO 토글 칩
           GestureDetector(
             onTap: () {
               setState(() {
@@ -409,7 +493,6 @@ class _ControlScreenState extends State<ControlScreen>
   Widget _buildJoystickPanel(BluetoothManager btManager) {
     return Column(
       children: [
-        // 조이스틱 헤더
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
           child: Row(
@@ -426,7 +509,6 @@ class _ControlScreenState extends State<ControlScreen>
                 ),
               ),
               const Spacer(),
-              // 현재 방향 표시
               if (_lastDirection != JoystickDirection.stop)
                 Text(
                   _getDirectionLabel(_lastDirection),
@@ -438,8 +520,6 @@ class _ControlScreenState extends State<ControlScreen>
             ],
           ),
         ),
-
-        // 조이스틱
         Expanded(
           child: Center(
             child: JoystickView(
@@ -449,8 +529,6 @@ class _ControlScreenState extends State<ControlScreen>
             ),
           ),
         ),
-
-        // 방향 모션 번호 표시 (하단)
         _buildDirectionInfo(),
       ],
     );
@@ -461,7 +539,7 @@ class _ControlScreenState extends State<ControlScreen>
       return Padding(
         padding: const EdgeInsets.only(bottom: 4),
         child: Text(
-          '50ms 간격 패킷 전송',
+          '전진: 2→3→4  후진: 9→10→11',
           style: TextStyle(
             color: Colors.white.withValues(alpha: 0.25),
             fontSize: 9,
@@ -469,15 +547,26 @@ class _ControlScreenState extends State<ControlScreen>
         ),
       );
     }
-    final motionIndex = _joystickMotionMap[_lastDirection] ?? 1;
+
+    final isForward = _lastDirection == JoystickDirection.forward;
+    final isBackward = _lastDirection == JoystickDirection.backward;
+    String label;
+    if (isForward) {
+      label =
+          '전진 시퀀스 M${_motionRepeater.currentMotion} 전송 중';
+    } else if (isBackward) {
+      label =
+          '후진 시퀀스 M${_motionRepeater.currentMotion} 전송 중';
+    } else {
+      final motionIndex = _joystickMotionMap[_lastDirection] ?? 1;
+      label = '모션 $motionIndex 전송 중';
+    }
+
     return Padding(
       padding: const EdgeInsets.only(bottom: 4),
       child: Text(
-        '모션 $motionIndex 전송 중',
-        style: const TextStyle(
-          color: Colors.greenAccent,
-          fontSize: 9,
-        ),
+        label,
+        style: const TextStyle(color: Colors.greenAccent, fontSize: 9),
       ),
     );
   }

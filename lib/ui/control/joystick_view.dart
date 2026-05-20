@@ -29,17 +29,19 @@ class JoystickOutput {
     power: 0.0,
   );
 
-  /// 방향에 따른 기본 모션 번호 매핑
+  /// 방향에 따른 기본 모션 번호 매핑 (fb153 모션 테이블 기준)
+  /// 전진 ST F=2, 후진 ST B=9, 좌이동=5, 우이동=6
+  /// 좌회전=7, 우회전=8, 좌전방=12, 우전방=13
   static const Map<JoystickDirection, int> defaultMotionMap = {
-    JoystickDirection.stop: 1,
-    JoystickDirection.forward: 2,
-    JoystickDirection.backward: 3,
-    JoystickDirection.left: 4,
-    JoystickDirection.right: 5,
-    JoystickDirection.forwardLeft: 6,
-    JoystickDirection.forwardRight: 7,
-    JoystickDirection.backwardLeft: 8,
-    JoystickDirection.backwardRight: 9,
+    JoystickDirection.stop:          1,   // Ready
+    JoystickDirection.forward:       2,   // ST F (전진)
+    JoystickDirection.backward:      9,   // ST B (후진) ← 모션테이블 9번
+    JoystickDirection.left:          7,   // Turn L (좌회전)
+    JoystickDirection.right:         8,   // Turn R (우회전)
+    JoystickDirection.forwardLeft:   12,  // L Forward (좌전방)
+    JoystickDirection.forwardRight:  13,  // R Forward (우전방)
+    JoystickDirection.backwardLeft:  7,   // 후진+좌 → 좌회전 fallback
+    JoystickDirection.backwardRight: 8,   // 후진+우 → 우회전 fallback
   };
 
   String get directionLabel {

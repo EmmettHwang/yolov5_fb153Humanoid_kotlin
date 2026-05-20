@@ -204,6 +204,28 @@ class BluetoothManager extends ChangeNotifier {
   // ══════════════════════════════════════════════════════════════
   //  자동 재연결
   // ══════════════════════════════════════════════════════════════
+  Timer? _reconnectTimer;
+  int _reconnectAttempts = 0;
+  static const int _maxReconnectAttempts = 5;
+
+  void _scheduleAutoReconnect() {
+    if (_lastMac == null) return;
+    _reconnectTimer?.cancel();
+    if (_reconnectAttempts >= _maxReconnectAttempts) {
+      _reconnectAttempts = 0;
+      debugPrint('[BT] 자동 재연결 최대 시도 초과 — 중단');
+      return;
+    }
+    final delay = Duration(seconds: 3 + _reconnectAttempts * 2);
+    debugPrint('[BT] ${delay.inSeconds}초 후 자동 재연결 시도 (${_reconnectAttempts + 1}/$_maxReconnectAttempts)');
+    _reconnectTimer = Timer(delay, () async {
+      if (!isConnected && _lastMac != null) {
+        _reconnectAttempts++;
+        await tryAutoReconnect();
+      }
+    });
+  }
+
   Future<bool> tryAutoReconnect() async {
     if (_lastMac == null) return false;
     if (isConnected) return true;
@@ -211,6 +233,7 @@ class BluetoothManager extends ChangeNotifier {
     final prefs = await SharedPreferences.getInstance();
     final lastName = prefs.getString(_prefKeyLastName) ?? 'fb153 로봇';
     await connect(BluetoothDeviceInfo(name: lastName, address: _lastMac!));
+    if (isConnected) _reconnectAttempts = 0;
     return isConnected;
   }
 
@@ -259,6 +282,8 @@ class BluetoothManager extends ChangeNotifier {
         if (_connectionState != BtConnectionState.error) {
           _setState(BtConnectionState.disconnected);
         }
+        // 마지막 기기가 있으면 3초 후 자동 재연결 시도
+        _scheduleAutoReconnect();
 
       case 'error':
         _errorMessage = event['message'] as String?;

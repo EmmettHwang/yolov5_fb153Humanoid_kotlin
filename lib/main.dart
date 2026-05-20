@@ -3,6 +3,9 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'bluetooth/bluetooth_manager.dart';
 import 'command/command_set_manager.dart';
+import 'models/yolo_action_config.dart';
+import 'services/audio_service.dart';
+import 'services/robot_name_service.dart';
 import 'services/voice_command_service.dart';
 import 'ui/control/control_screen.dart';
 
@@ -31,6 +34,14 @@ class RoboCommanderApp extends StatelessWidget {
         ChangeNotifierProvider(create: (_) => BluetoothManager()),
         ChangeNotifierProvider(create: (_) => CommandSetManager()),
         ChangeNotifierProvider(create: (_) => VoiceCommandService()),
+        // 로봇 이름 서비스 (singleton)
+        ChangeNotifierProvider<RobotNameService>(
+          create: (_) => RobotNameService(),
+        ),
+        // YOLO 동작 설정 관리자 (singleton)
+        ChangeNotifierProvider<YoloActionManager>(
+          create: (_) => YoloActionManager(),
+        ),
       ],
       child: MaterialApp(
         title: 'Robo Commander',
@@ -88,7 +99,6 @@ class RoboCommanderApp extends StatelessWidget {
 }
 
 /// ─── 스플래시 화면 ───────────────────────────────────
-/// 초기화 → 자동 재연결 시도 → 결과에 따라 화면 분기
 class SplashScreen extends StatefulWidget {
   const SplashScreen({super.key});
 
@@ -112,10 +122,13 @@ class _SplashScreenState extends State<SplashScreen>
       vsync: this,
     );
     _fadeAnim = Tween<double>(begin: 0, end: 1).animate(
-      CurvedAnimation(parent: _ctrl, curve: const Interval(0.0, 0.6, curve: Curves.easeOut)),
+      CurvedAnimation(
+          parent: _ctrl, curve: const Interval(0.0, 0.6, curve: Curves.easeOut)),
     );
     _scaleAnim = Tween<double>(begin: 0.6, end: 1.0).animate(
-      CurvedAnimation(parent: _ctrl, curve: const Interval(0.0, 0.7, curve: Curves.elasticOut)),
+      CurvedAnimation(
+          parent: _ctrl,
+          curve: const Interval(0.0, 0.7, curve: Curves.elasticOut)),
     );
     _ctrl.forward();
     _initialize();
@@ -123,23 +136,44 @@ class _SplashScreenState extends State<SplashScreen>
 
   Future<void> _initialize() async {
     await Future.delayed(const Duration(milliseconds: 800));
-
     if (!mounted) return;
+
     final btManager = context.read<BluetoothManager>();
 
-    // 1. BluetoothManager 초기화 (마지막 기기 MAC 복원)
-    await btManager.init();
+    // 1. AudioService 미리 초기화
+    await AudioService().initialize();
 
-    // 2. 마지막 연결 기기가 있으면 백그라운드 자동 재연결 시도
-    //    → 성공/실패 관계없이 항상 메인 제어 화면으로 직행
-    if (btManager.lastMac != null) {
-      if (mounted) setState(() => _statusText = '마지막 로봇 재연결 시도 중...');
-      // 백그라운드로 연결 시도 (결과를 기다리지 않음)
+    // 2. RobotNameService 로드
+    if (mounted) {
+      await context.read<RobotNameService>().load();
+    }
+
+    // 3. YoloActionManager 로드
+    if (mounted) {
+      await context.read<YoloActionManager>().load();
+    }
+
+    // 4. BluetoothManager 초기화
+    if (mounted) {
+      await btManager.init();
+    }
+
+    // 5. 마지막 기기 자동 재연결 시도
+    if (mounted && btManager.lastMac != null) {
+      setState(() => _statusText = '마지막 로봇 재연결 시도 중...');
       btManager.tryAutoReconnect();
     }
 
-    // 3. 항상 메인 제어 화면으로 이동 (BT 연결은 선택 사항)
+    // 6. 메인 화면으로 이동
     _goToControl();
+
+    // 7. TTS 인사말 (로봇 이름 포함)
+    Future.delayed(const Duration(milliseconds: 1200), () {
+      if (mounted) {
+        final name = context.read<RobotNameService>().name;
+        AudioService().speakGreeting(robotName: name);
+      }
+    });
   }
 
   void _goToControl() {
@@ -154,7 +188,6 @@ class _SplashScreenState extends State<SplashScreen>
       ),
     );
   }
-
 
   @override
   void dispose() {
@@ -176,7 +209,6 @@ class _SplashScreenState extends State<SplashScreen>
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  // 로봇 아이콘
                   Container(
                     width: 110,
                     height: 110,
@@ -219,8 +251,6 @@ class _SplashScreenState extends State<SplashScreen>
                     ),
                   ),
                   const SizedBox(height: 52),
-
-                  // 상태 텍스트
                   Text(
                     _statusText,
                     style: TextStyle(
@@ -230,8 +260,6 @@ class _SplashScreenState extends State<SplashScreen>
                     ),
                   ),
                   const SizedBox(height: 12),
-
-                  // 로딩 바
                   SizedBox(
                     width: 160,
                     child: LinearProgressIndicator(

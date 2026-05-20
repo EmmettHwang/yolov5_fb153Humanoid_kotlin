@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import '../../models/action_button_config.dart';
 import '../../bluetooth/bluetooth_manager.dart' as bt;
 import '../../command/command_set_manager.dart';
+import '../../services/audio_service.dart';
 import '../settings/button_editor_dialog.dart';
 import 'package:provider/provider.dart';
 
@@ -65,8 +67,20 @@ class ActionButtonPanel extends StatelessWidget {
               return _ActionButton(
                 config: config,
                 isConnected: btManager.isConnected,
-                onPressed: () => onButtonPressed?.call(config),
-                onLongPress: () => _openEditor(context, config),
+                onPressed: () {
+                  HapticFeedback.mediumImpact();
+                  if (config.hasAudio) {
+                    AudioService().playForButton(
+                      mp3FilePath: config.mp3FilePath,
+                      ttsText: config.ttsText,
+                    );
+                  }
+                  onButtonPressed?.call(config);
+                },
+                onLongPress: () {
+                  HapticFeedback.heavyImpact();
+                  _openEditor(context, config);
+                },
               );
             },
           ),
@@ -141,7 +155,7 @@ class _ActionButtonState extends State<_ActionButton>
       onTapUp: _onTapUp,
       onTapCancel: () => _animCtrl.reverse(),
       onTap: isActive ? widget.onPressed : null,
-      onLongPress: widget.onLongPress,
+      onLongPress: widget.onLongPress,  // 햅틱은 ActionButtonPanel에서 처리
       child: AnimatedBuilder(
         animation: _scaleAnim,
         builder: (context, child) => Transform.scale(
@@ -183,7 +197,7 @@ class _ActionButtonState extends State<_ActionButton>
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              // 모션 번호 뱃지
+              // 모션 번호 뱃지 (모션 번호 표시)
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
                 decoration: BoxDecoration(
@@ -191,11 +205,12 @@ class _ActionButtonState extends State<_ActionButton>
                   borderRadius: BorderRadius.circular(4),
                 ),
                 child: Text(
-                  'M${widget.config.motionIndex}',
+                  '${widget.config.motionIndex}',
                   style: TextStyle(
-                    color: Colors.white.withValues(alpha: 0.7),
-                    fontSize: 8,
+                    color: Colors.cyanAccent.withValues(alpha: 0.85),
+                    fontSize: 9,
                     fontWeight: FontWeight.bold,
+                    fontFamily: 'monospace',
                   ),
                 ),
               ),
@@ -212,16 +227,30 @@ class _ActionButtonState extends State<_ActionButton>
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,
               ),
-              // 버튼 번호
+              // 오디오 힌트 + 버튼 번호
               const SizedBox(height: 2),
-              Text(
-                '${widget.config.id}',
-                style: TextStyle(
-                  color: isActive
-                      ? Colors.white.withValues(alpha: 0.5)
-                      : Colors.grey.shade700,
-                  fontSize: 8,
-                ),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (widget.config.audioHint.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(right: 3),
+                      child: Text(
+                        widget.config.audioHint,
+                        style: const TextStyle(fontSize: 9),
+                      ),
+                    ),
+                  Text(
+                    '${widget.config.id}',
+                    style: TextStyle(
+                      color: isActive
+                          ? Colors.white.withValues(alpha: 0.5)
+                          : Colors.grey.shade700,
+                      fontSize: 8,
+                    ),
+                  ),
+                ],
               ),
             ],
           ),

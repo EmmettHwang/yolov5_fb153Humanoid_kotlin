@@ -3,10 +3,11 @@ import 'package:provider/provider.dart';
 import '../../bluetooth/bluetooth_manager.dart';
 import '../../command/command_set_manager.dart';
 import '../../models/action_button_config.dart';
+import '../../services/robot_name_service.dart';
 import 'button_editor_dialog.dart';
 import '../bluetooth/bluetooth_scan_screen.dart';
 
-/// 설정 화면
+/// 설정 화면 (Bluetooth / 버튼 설정 / 로봇 이름)
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
 
@@ -21,7 +22,7 @@ class _SettingsScreenState extends State<SettingsScreen>
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 2, vsync: this);
+    _tabController = TabController(length: 3, vsync: this);
   }
 
   @override
@@ -54,6 +55,7 @@ class _SettingsScreenState extends State<SettingsScreen>
           tabs: const [
             Tab(icon: Icon(Icons.bluetooth, size: 16), text: 'Bluetooth'),
             Tab(icon: Icon(Icons.gamepad, size: 16), text: '버튼 설정'),
+            Tab(icon: Icon(Icons.smart_toy, size: 16), text: '로봇 이름'),
           ],
         ),
         leading: IconButton(
@@ -64,204 +66,302 @@ class _SettingsScreenState extends State<SettingsScreen>
       body: TabBarView(
         controller: _tabController,
         children: [
-          // Bluetooth 탭 → 전용 스캔 화면 임베드
           const BluetoothScanScreen(isFirstLaunch: false),
           _ButtonConfigTab(),
+          const _RobotNameTab(),
         ],
       ),
     );
   }
 }
 
-/// Bluetooth 연결 탭
-class _BluetoothTab extends StatelessWidget {
+// ─────────────────────────────────────────────────────────────────────────────
+// 로봇 이름 설정 탭
+// ─────────────────────────────────────────────────────────────────────────────
+class _RobotNameTab extends StatefulWidget {
+  const _RobotNameTab();
+
+  @override
+  State<_RobotNameTab> createState() => _RobotNameTabState();
+}
+
+class _RobotNameTabState extends State<_RobotNameTab> {
+  late TextEditingController _nameCtrl;
+  bool _saved = false;
+
+  @override
+  void initState() {
+    super.initState();
+    final currentName = context.read<RobotNameService>().name;
+    _nameCtrl = TextEditingController(text: currentName);
+  }
+
+  @override
+  void dispose() {
+    _nameCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _saveName() async {
+    final name = _nameCtrl.text.trim();
+    await context.read<RobotNameService>().setName(name);
+    setState(() => _saved = true);
+    Future.delayed(const Duration(seconds: 2), () {
+      if (mounted) setState(() => _saved = false);
+    });
+    if (!mounted) return;
+    final displayName = name.isEmpty ? RobotNameService.defaultName : name;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Row(
+          children: [
+            const Icon(Icons.check_circle, color: Colors.white, size: 16),
+            const SizedBox(width: 8),
+            Text('로봇 이름이 "$displayName"으로 변경되었습니다'),
+          ],
+        ),
+        backgroundColor: Colors.green.shade700,
+        duration: const Duration(seconds: 2),
+      ),
+    );
+  }
+
+  void _resetName() {
+    _nameCtrl.text = RobotNameService.defaultName;
+    _saveName();
+  }
+
   @override
   Widget build(BuildContext context) {
-    final btManager = context.watch<BluetoothManager>();
-
-    return Column(
-      children: [
-        // 현재 연결 상태
-        _buildConnectionStatus(context, btManager),
-
-        // 스캔 버튼
-        Padding(
-          padding: const EdgeInsets.all(16),
-          child: Row(
-            children: [
-              Text(
-                '페어링된 기기',
-                style: TextStyle(
-                  color: Colors.white.withValues(alpha: 0.7),
-                  fontSize: 13,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-              const Spacer(),
-              ElevatedButton.icon(
-                icon: btManager.connectionState == BtConnectionState.scanning
-                    ? const SizedBox(
-                        width: 12,
-                        height: 12,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2,
-                          color: Colors.black,
-                        ),
-                      )
-                    : const Icon(Icons.refresh, size: 14),
-                label: Text(
-                  btManager.connectionState == BtConnectionState.scanning
-                      ? '스캔 중...'
-                      : '새로고침',
-                  style: const TextStyle(fontSize: 12),
-                ),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.cyanAccent,
-                  foregroundColor: Colors.black,
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                ),
-                onPressed: btManager.connectionState == BtConnectionState.scanning
-                    ? null
-                    : () => btManager.startScan(),
-              ),
-            ],
-          ),
-        ),
-
-        // 기기 목록
-        Expanded(
-          child: btManager.discoveredDevices.isEmpty
-              ? _buildEmptyDeviceList()
-              : ListView.builder(
-                  itemCount: btManager.discoveredDevices.length,
-                  itemBuilder: (context, index) {
-                    final device = btManager.discoveredDevices[index];
-                    final isConnected =
-                        btManager.connectedDevice?.address == device.address;
-                    return _DeviceTile(
-                      device: device,
-                      isConnected: isConnected,
-                      onTap: () => isConnected
-                          ? btManager.disconnect()
-                          : btManager.connect(device),
-                    );
-                  },
-                ),
-        ),
-
-        // 안내 텍스트
-        Padding(
-          padding: const EdgeInsets.all(16),
-          child: _buildInfo(),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildConnectionStatus(BuildContext context, BluetoothManager btManager) {
-    Color statusColor;
-    String statusText;
-    IconData statusIcon;
-
-    switch (btManager.connectionState) {
-      case BtConnectionState.connected:
-        statusColor = Colors.greenAccent;
-        statusText = '연결됨: ${btManager.connectedDevice?.name ?? '-'}';
-        statusIcon = Icons.bluetooth_connected;
-        break;
-      case BtConnectionState.connecting:
-        statusColor = Colors.orangeAccent;
-        statusText = '연결 중...';
-        statusIcon = Icons.bluetooth_searching;
-        break;
-      case BtConnectionState.scanning:
-        statusColor = Colors.blueAccent;
-        statusText = '스캔 중...';
-        statusIcon = Icons.bluetooth_searching;
-        break;
-      case BtConnectionState.error:
-        statusColor = Colors.redAccent;
-        statusText = btManager.errorMessage ?? '오류 발생';
-        statusIcon = Icons.error_outline;
-        break;
-      default:
-        statusColor = Colors.white38;
-        statusText = '연결 안됨';
-        statusIcon = Icons.bluetooth_disabled;
-    }
-
-    return Container(
-      margin: const EdgeInsets.all(16),
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: statusColor.withValues(alpha: 0.1),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: statusColor.withValues(alpha: 0.4)),
-      ),
-      child: Row(
-        children: [
-          Icon(statusIcon, color: statusColor, size: 24),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Text(
-              statusText,
-              style: TextStyle(color: statusColor, fontSize: 14, fontWeight: FontWeight.w600),
-            ),
-          ),
-          if (btManager.isConnected)
-            TextButton(
-              onPressed: () => btManager.disconnect(),
-              child: const Text(
-                '연결 해제',
-                style: TextStyle(color: Colors.redAccent, fontSize: 12),
-              ),
-            ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildEmptyDeviceList() {
-    return Center(
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(20),
       child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(Icons.bluetooth_disabled, size: 48, color: Colors.white24),
-          const SizedBox(height: 16),
-          Text(
-            '기기를 찾을 수 없습니다',
-            style: TextStyle(color: Colors.white38, fontSize: 14),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            'fb153 로봇의 전원을 켜고\n스마트폰과 먼저 페어링하세요',
-            textAlign: TextAlign.center,
-            style: TextStyle(color: Colors.white24, fontSize: 12),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildInfo() {
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: Colors.blue.withValues(alpha: 0.1),
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: Colors.blue.withValues(alpha: 0.3)),
-      ),
-      child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Icon(Icons.info_outline, color: Colors.blueAccent, size: 16),
-          const SizedBox(width: 8),
+          // 안내 카드
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: Colors.cyan.withValues(alpha: 0.08),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: Colors.cyan.withValues(alpha: 0.3)),
+            ),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Icon(Icons.info_outline,
+                    color: Colors.cyanAccent, size: 18),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    '헤더에 표시되는 로봇 이름을 원하는 이름으로 바꿀 수 있습니다.\n앱 재시작 후에도 유지됩니다.',
+                    style: TextStyle(
+                      color: Colors.white.withValues(alpha: 0.7),
+                      fontSize: 13,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+
+          const SizedBox(height: 28),
+
+          // 현재 이름 미리보기
+          Center(
+            child: Consumer<RobotNameService>(
+              builder: (context, svc, _) => Column(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 20, vertical: 12),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF0D1F2D),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(
+                          color: Colors.cyanAccent.withValues(alpha: 0.4)),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(Icons.smart_toy,
+                            color: Colors.cyanAccent, size: 24),
+                        const SizedBox(width: 10),
+                        Text(
+                          svc.name,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 20,
+                            fontWeight: FontWeight.bold,
+                            letterSpacing: 2,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    '현재 헤더 표시',
+                    style: TextStyle(
+                      color: Colors.white.withValues(alpha: 0.4),
+                      fontSize: 11,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+
+          const SizedBox(height: 28),
+
+          // 이름 입력 필드
+          Text(
+            '새 이름 입력',
+            style: TextStyle(
+              color: Colors.white.withValues(alpha: 0.7),
+              fontSize: 13,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const SizedBox(height: 8),
+          TextField(
+            controller: _nameCtrl,
+            style: const TextStyle(color: Colors.white, fontSize: 16),
+            maxLength: 20,
+            decoration: InputDecoration(
+              hintText: '예: ROBO, MyBot, fb153...',
+              hintStyle: TextStyle(color: Colors.white.withValues(alpha: 0.3)),
+              filled: true,
+              fillColor: const Color(0xFF0D1F2D),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(10),
+                borderSide:
+                    BorderSide(color: Colors.white.withValues(alpha: 0.2)),
+              ),
+              enabledBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(10),
+                borderSide:
+                    BorderSide(color: Colors.white.withValues(alpha: 0.2)),
+              ),
+              focusedBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(10),
+                borderSide: const BorderSide(color: Colors.cyanAccent),
+              ),
+              counterStyle:
+                  TextStyle(color: Colors.white.withValues(alpha: 0.4)),
+              prefixIcon: const Icon(Icons.edit, color: Colors.cyanAccent, size: 20),
+              suffixIcon: IconButton(
+                icon: const Icon(Icons.clear, color: Colors.white38, size: 18),
+                onPressed: () => _nameCtrl.clear(),
+              ),
+            ),
+            onSubmitted: (_) => _saveName(),
+          ),
+
+          const SizedBox(height: 20),
+
+          // 저장 버튼
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton.icon(
+              icon: Icon(
+                _saved ? Icons.check : Icons.save,
+                size: 18,
+              ),
+              label: Text(
+                _saved ? '저장 완료!' : '이름 저장',
+                style: const TextStyle(
+                    fontSize: 15, fontWeight: FontWeight.bold),
+              ),
+              style: ElevatedButton.styleFrom(
+                backgroundColor:
+                    _saved ? Colors.greenAccent : Colors.cyanAccent,
+                foregroundColor: Colors.black,
+                padding: const EdgeInsets.symmetric(vertical: 14),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10)),
+              ),
+              onPressed: _saveName,
+            ),
+          ),
+
+          const SizedBox(height: 12),
+
+          // 기본값으로 재설정
+          const SizedBox(height: 0), // spacer
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
+              icon: const Icon(Icons.restore, size: 16),
+              label: Text(
+                '기본값으로 재설정 (${RobotNameService.defaultName})',
+                style: const TextStyle(fontSize: 13),
+              ),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: Colors.orangeAccent,
+                side: BorderSide(
+                    color: Colors.orangeAccent.withValues(alpha: 0.5)),
+                padding: const EdgeInsets.symmetric(vertical: 12),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10)),
+              ),
+              onPressed: _resetName,
+            ),
+          ),
+
+          const SizedBox(height: 40),
+
+          // 팁 섹션
+          Container(
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.04),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '💡 이름 팁',
+                  style: TextStyle(
+                    color: Colors.white.withValues(alpha: 0.6),
+                    fontSize: 12,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                _tipRow('영문, 숫자, 한글 모두 사용 가능'),
+                _tipRow('최대 20자까지 입력 가능'),
+                _tipRow('공백만 입력하면 기본값(ROBO)으로 설정됨'),
+                _tipRow('TTS 인사말에도 새 이름이 반영됩니다'),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _tipRow(String text) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 4),
+      child: Row(
+        children: [
+          Container(
+            width: 4,
+            height: 4,
+            margin: const EdgeInsets.only(right: 8, top: 2),
+            decoration: const BoxDecoration(
+              color: Colors.cyanAccent,
+              shape: BoxShape.circle,
+            ),
+          ),
           Expanded(
             child: Text(
-              '설정 → Bluetooth에서 fb153 로봇을 먼저 페어링한 후 이 화면에서 연결하세요.\nSPP UUID: 00001101-0000-1000-8000-00805F9B34FB',
+              text,
               style: TextStyle(
                 color: Colors.white.withValues(alpha: 0.5),
-                fontSize: 11,
+                fontSize: 12,
               ),
             ),
           ),
@@ -271,75 +371,9 @@ class _BluetoothTab extends StatelessWidget {
   }
 }
 
-/// 기기 목록 타일
-class _DeviceTile extends StatelessWidget {
-  final BluetoothDeviceInfo device;
-  final bool isConnected;
-  final VoidCallback onTap;
-
-  const _DeviceTile({
-    required this.device,
-    required this.isConnected,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final isFb153 = device.name.toLowerCase().contains('fb153');
-    return ListTile(
-      leading: Container(
-        width: 40,
-        height: 40,
-        decoration: BoxDecoration(
-          color: isConnected
-              ? Colors.green.withValues(alpha: 0.2)
-              : isFb153
-                  ? Colors.cyan.withValues(alpha: 0.2)
-                  : Colors.white.withValues(alpha: 0.05),
-          borderRadius: BorderRadius.circular(8),
-        ),
-        child: Icon(
-          isFb153 ? Icons.smart_toy : Icons.bluetooth,
-          color: isConnected
-              ? Colors.greenAccent
-              : isFb153
-                  ? Colors.cyanAccent
-                  : Colors.white38,
-          size: 20,
-        ),
-      ),
-      title: Text(
-        device.name,
-        style: TextStyle(
-          color: isConnected ? Colors.greenAccent : Colors.white,
-          fontWeight: isFb153 ? FontWeight.bold : FontWeight.normal,
-          fontSize: 14,
-        ),
-      ),
-      subtitle: Text(
-        device.address,
-        style: TextStyle(color: Colors.white38, fontSize: 11),
-      ),
-      trailing: ElevatedButton(
-        style: ElevatedButton.styleFrom(
-          backgroundColor: isConnected
-              ? Colors.redAccent.withValues(alpha: 0.8)
-              : Colors.cyanAccent,
-          foregroundColor: isConnected ? Colors.white : Colors.black,
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-          minimumSize: const Size(70, 30),
-        ),
-        onPressed: onTap,
-        child: Text(
-          isConnected ? '해제' : '연결',
-          style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
-        ),
-      ),
-    );
-  }
-}
-
-/// 버튼 설정 탭
+// ─────────────────────────────────────────────────────────────────────────────
+// 버튼 설정 탭
+// ─────────────────────────────────────────────────────────────────────────────
 class _ButtonConfigTab extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
@@ -347,7 +381,6 @@ class _ButtonConfigTab extends StatelessWidget {
 
     return Column(
       children: [
-        // 초기화 버튼
         Padding(
           padding: const EdgeInsets.all(16),
           child: Row(
@@ -372,8 +405,6 @@ class _ButtonConfigTab extends StatelessWidget {
             ],
           ),
         ),
-
-        // 버튼 설정 목록
         Expanded(
           child: ListView.builder(
             itemCount: 9,
@@ -409,7 +440,8 @@ class _ButtonConfigTab extends StatelessWidget {
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
-            child: const Text('취소', style: TextStyle(color: Colors.white54)),
+            child:
+                const Text('취소', style: TextStyle(color: Colors.white54)),
           ),
           ElevatedButton(
             style: ElevatedButton.styleFrom(
@@ -460,11 +492,25 @@ class _ButtonConfigTile extends StatelessWidget {
       ),
       subtitle: Text(
         '모션 ${config.motionIndex} · 시퀀스 ${config.commandSequence.length}단계',
-        style: TextStyle(color: Colors.white38, fontSize: 11),
+        style: const TextStyle(color: Colors.white38, fontSize: 11),
       ),
       trailing: IconButton(
         icon: const Icon(Icons.edit, color: Colors.cyanAccent, size: 20),
         onPressed: onEdit,
+      ),
+    );
+  }
+}
+
+// ignore: unused_element
+class _BluetoothTab extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    final btManager = context.watch<BluetoothManager>();
+    return Center(
+      child: Text(
+        btManager.isConnected ? '연결됨' : '미연결',
+        style: const TextStyle(color: Colors.white),
       ),
     );
   }

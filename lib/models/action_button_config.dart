@@ -3,8 +3,9 @@ class ActionButtonConfig {
   final int id; // 버튼 번호 (1~9)
   final String label; // 버튼 표시 이름
   final int motionIndex; // 전송할 모션 번호 (0~255)
-  final String? mp3FilePath; // MP3 파일 경로
-  final String? mp3Url; // MP3 URL
+  final String? mp3FilePath; // MP3 파일 경로 (로컬 또는 assets/)
+  final String? mp3Url; // MP3 URL (미사용, 하위호환)
+  final String? ttsText; // TTS 텍스트 (mp3FilePath 없을 때 음성 출력)
   final int color; // 버튼 배경색 (ARGB)
   final List<CommandStep> commandSequence; // 연속 모션 시퀀스
 
@@ -14,15 +15,31 @@ class ActionButtonConfig {
     required this.motionIndex,
     this.mp3FilePath,
     this.mp3Url,
+    this.ttsText,
     required this.color,
     this.commandSequence = const [],
   });
+
+  // mp3FilePath 또는 ttsText 중 실제 오디오가 설정됐는지 여부
+  bool get hasAudio =>
+      (mp3FilePath != null && mp3FilePath!.trim().isNotEmpty) ||
+      (ttsText != null && ttsText!.trim().isNotEmpty);
+
+  // 표시용: MP3이면 '🎵', TTS이면 '🔊', 없으면 ''
+  String get audioHint {
+    if (mp3FilePath != null && mp3FilePath!.trim().isNotEmpty) return '🎵';
+    if (ttsText != null && ttsText!.trim().isNotEmpty) return '🔊';
+    return '';
+  }
 
   ActionButtonConfig copyWith({
     String? label,
     int? motionIndex,
     String? mp3FilePath,
+    bool clearMp3 = false,
     String? mp3Url,
+    String? ttsText,
+    bool clearTts = false,
     int? color,
     List<CommandStep>? commandSequence,
   }) {
@@ -30,8 +47,9 @@ class ActionButtonConfig {
       id: id,
       label: label ?? this.label,
       motionIndex: motionIndex ?? this.motionIndex,
-      mp3FilePath: mp3FilePath ?? this.mp3FilePath,
+      mp3FilePath: clearMp3 ? null : (mp3FilePath ?? this.mp3FilePath),
       mp3Url: mp3Url ?? this.mp3Url,
+      ttsText: clearTts ? null : (ttsText ?? this.ttsText),
       color: color ?? this.color,
       commandSequence: commandSequence ?? this.commandSequence,
     );
@@ -43,6 +61,7 @@ class ActionButtonConfig {
         'motionIndex': motionIndex,
         'mp3FilePath': mp3FilePath,
         'mp3Url': mp3Url,
+        'ttsText': ttsText,
         'color': color,
         'commandSequence': commandSequence.map((s) => s.toJson()).toList(),
       };
@@ -54,6 +73,7 @@ class ActionButtonConfig {
       motionIndex: json['motionIndex'] as int,
       mp3FilePath: json['mp3FilePath'] as String?,
       mp3Url: json['mp3Url'] as String?,
+      ttsText: json['ttsText'] as String?,
       color: json['color'] as int,
       commandSequence: (json['commandSequence'] as List<dynamic>?)
               ?.map((s) => CommandStep.fromJson(s as Map<String, dynamic>))

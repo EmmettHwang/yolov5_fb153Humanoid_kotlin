@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/action_button_config.dart';
 import '../bluetooth/bluetooth_manager.dart';
+import '../services/yolo_detector_service.dart';
 
 /// 버튼 명령어 셋 관리자 (SharedPreferences 저장)
 class CommandSetManager extends ChangeNotifier {
@@ -86,24 +87,31 @@ class CommandSetManager extends ChangeNotifier {
   }
 
   /// 명령어 시퀀스 실행
+  /// [yoloService] 가 있으면 전송 중 TFLite 추론 일시정지 → 완료 후 재개
   Future<void> executeCommandSet(
     ActionButtonConfig config,
-    BluetoothManager btManager,
-  ) async {
+    BluetoothManager btManager, {
+    YoloDetectorService? yoloService,
+  }) async {
     if (!btManager.isConnected) return;
 
-    if (config.commandSequence.isEmpty) {
-      // 단순 모션 전송
-      await btManager.sendMotion(config.motionIndex);
-      return;
-    }
+    // 추론 일시정지 (딜레이 제거)
+    yoloService?.pauseInference();
 
-    // 연속 모션 시퀀스 실행
-    for (final step in config.commandSequence) {
-      for (int r = 0; r < step.repeatCount; r++) {
-        await btManager.sendMotion(step.motionIndex);
-        await Future.delayed(Duration(milliseconds: step.holdDurationMs));
+    try {
+      if (config.commandSequence.isEmpty) {
+        await btManager.sendMotion(config.motionIndex);
+      } else {
+        for (final step in config.commandSequence) {
+          for (int r = 0; r < step.repeatCount; r++) {
+            await btManager.sendMotion(step.motionIndex);
+            await Future.delayed(Duration(milliseconds: step.holdDurationMs));
+          }
+        }
       }
+    } finally {
+      // 추론 재개 (예외 시에도 반드시 재개)
+      yoloService?.resumeInference();
     }
   }
 }

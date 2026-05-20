@@ -50,6 +50,7 @@ class YoloDetectorService extends ChangeNotifier {
 
   bool                  _running      = false;
   bool                  _disposed     = false;
+  bool                  _paused       = false;   // 동작 전송 중 추론 일시정지
 
   // 프레임 throttle — 최대 6fps (모바일 성능 고려)
   DateTime?             _lastFrame;
@@ -58,7 +59,9 @@ class YoloDetectorService extends ChangeNotifier {
   // ── 초기화 ────────────────────────────────────────────────────────────────
   Future<void> initialize() async {
     if (_state == YoloModelState.loading ||
-        _state == YoloModelState.ready) return;
+        _state == YoloModelState.ready) {
+      return;
+    }
 
     _setState(YoloModelState.loading);
     _setProgress(0.0);
@@ -126,10 +129,25 @@ class YoloDetectorService extends ChangeNotifier {
           List.generate(_inputSize, (_) =>
             List<int>.filled(3, 128))));  // uint8 zero_point=128
 
+  // ── 추론 일시정지 / 재개 ──────────────────────────────────────────────────
+  /// 모션 전송 중 TFLite 추론 중단 (카메라 스트림은 유지)
+  void pauseInference() {
+    _paused = true;
+    debugPrint('[OD] 추론 일시정지');
+  }
+
+  /// 모션 전송 완료 후 추론 재개
+  void resumeInference() {
+    _paused = false;
+    debugPrint('[OD] 추론 재개');
+  }
+
+  bool get isPaused => _paused;
+
   // ── 프레임 처리 ───────────────────────────────────────────────────────────
   Future<void> processFrame(CameraImage frame, Size displaySize) async {
     if (_interpreter == null || _state != YoloModelState.ready) return;
-    if (_running) return;
+    if (_running || _paused) return;   // 일시정지 중이면 스킵
 
     final now = DateTime.now();
     if (_lastFrame != null &&
