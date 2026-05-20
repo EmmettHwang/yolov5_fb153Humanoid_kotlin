@@ -22,7 +22,7 @@ class DetectionResult {
 }
 
 // ─────────────────────────────────────────────────────────────────
-// CameraPreviewWidget — 실제 카메라 + TFLite EfficientDet-Lite0
+// CameraPreviewWidget — 실제 카메라 + TFLite SSD MobileNet V1 COCO
 // ─────────────────────────────────────────────────────────────────
 class CameraPreviewWidget extends StatefulWidget {
   final bool isYoloActive;
@@ -386,7 +386,7 @@ class _CameraPreviewWidgetState extends State<CameraPreviewWidget>
                     fontSize: 14, fontWeight: FontWeight.bold,
                     letterSpacing: 1.5)),
             const SizedBox(height: 4),
-            Text('EfficientDet-Lite0  COCO 80 클래스',
+            Text('SSD MobileNet V1  COCO 80 클래스',
                 style: TextStyle(color: Colors.white.withValues(alpha: 0.5),
                     fontSize: 10)),
             const SizedBox(height: 16),
@@ -449,7 +449,7 @@ class _CameraPreviewWidgetState extends State<CameraPreviewWidget>
            Icons.videocam,
            color: _cameraReady ? Colors.cyanAccent : Colors.white38),
       const SizedBox(width: 6),
-      _tag('EfficientDet-Lite0', Icons.model_training),
+      _tag('SSD MobileNet V1', Icons.model_training),
       const Spacer(),
       _tag(statusLabel, statusIcon, color: statusColor),
     ]);
