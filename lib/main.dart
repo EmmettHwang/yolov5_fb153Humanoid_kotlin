@@ -4,7 +4,6 @@ import 'package:provider/provider.dart';
 import 'bluetooth/bluetooth_manager.dart';
 import 'command/command_set_manager.dart';
 import 'services/voice_command_service.dart';
-import 'ui/bluetooth/bluetooth_scan_screen.dart';
 import 'ui/control/control_screen.dart';
 
 void main() {
@@ -45,10 +44,10 @@ class RoboCommanderApp extends StatelessWidget {
   ThemeData _buildTheme() {
     return ThemeData(
       brightness: Brightness.dark,
-      colorScheme: ColorScheme.dark(
+      colorScheme: const ColorScheme.dark(
         primary: Colors.cyanAccent,
         secondary: Colors.cyan,
-        surface: const Color(0xFF0D1F2D),
+        surface: Color(0xFF0D1F2D),
       ),
       scaffoldBackgroundColor: const Color(0xFF060E18),
       appBarTheme: const AppBarTheme(

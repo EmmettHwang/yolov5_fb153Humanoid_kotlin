@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_bluetooth_serial/flutter_bluetooth_serial.dart';
 import 'package:flutter/services.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'packet_builder.dart';
 
@@ -121,12 +122,46 @@ class BluetoothManager extends ChangeNotifier {
   }
 
   // ══════════════════════════════════════════════════
+  //  BT 권한 확인 (Android 12+)
+  // ══════════════════════════════════════════════════
+  Future<bool> _ensureBluetoothPermissions() async {
+    // Android 12+ 에서 BLUETOOTH_CONNECT 런타임 권한 필요
+    final connectStatus = await Permission.bluetoothConnect.status;
+    if (connectStatus.isDenied || connectStatus.isRestricted) {
+      final result = await Permission.bluetoothConnect.request();
+      if (!result.isGranted) {
+        _errorMessage = 'Bluetooth 연결 권한이 필요합니다.\n설정 > 앱 > 권한 > 근처 기기를 허용해 주세요.';
+        debugPrint('[BT] BLUETOOTH_CONNECT 권한 거부됨');
+        return false;
+      }
+    }
+
+    final scanStatus = await Permission.bluetoothScan.status;
+    if (scanStatus.isDenied || scanStatus.isRestricted) {
+      final result = await Permission.bluetoothScan.request();
+      if (!result.isGranted) {
+        debugPrint('[BT] BLUETOOTH_SCAN 권한 거부됨 (무시하고 계속)');
+        // scan 권한 없어도 getBondedDevices는 동작 가능
+      }
+    }
+
+    return true;
+  }
+
+  // ══════════════════════════════════════════════════
   //  스캔 - 페어링된 기기 목록 + fb153 필터
   // ══════════════════════════════════════════════════
   Future<void> startScan({String filterPrefix = 'fb153'}) async {
     _discoveredDevices.clear();
     _errorMessage = null;
     _setState(BtConnectionState.scanning);
+
+    // ✅ 권한 확인 먼저
+    final hasPermission = await _ensureBluetoothPermissions();
+    if (!hasPermission) {
+      _setState(BtConnectionState.error);
+      return;
+    }
 
     try {
       final bonded = await FlutterBluetoothSerial.instance.getBondedDevices();

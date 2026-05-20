@@ -1,7 +1,7 @@
 name: robo_commander
 description: fb153 휴머노이드 로봇 Bluetooth 제어 앱
 publish_to: 'none'
-version: 1.0.250520+10
+version: 1.0.250521+11
 
 environment:
   sdk: '>=3.0.0 <4.0.0'
@@ -21,6 +21,12 @@ dependencies:
 
   # Camera
   camera: 0.11.1
+
+  # TFLite 추론 (YOLOv5)
+  tflite_flutter: 0.10.4
+
+  # 이미지 처리 (카메라 프레임 전처리)
+  image: 4.1.7
 
   # Permissions
   permission_handler: 11.3.1

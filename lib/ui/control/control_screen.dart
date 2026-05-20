@@ -4,6 +4,7 @@ import '../../bluetooth/bluetooth_manager.dart';
 import '../../bluetooth/motion_repeater.dart';
 import '../../command/command_set_manager.dart';
 import '../../models/action_button_config.dart';
+import '../../services/yolo_detector_service.dart';
 import '../camera/camera_preview_widget.dart';
 import '../settings/settings_screen.dart';
 import '../bluetooth/bluetooth_scan_screen.dart';
@@ -25,19 +26,20 @@ class _ControlScreenState extends State<ControlScreen>
   JoystickDirection _lastDirection = JoystickDirection.stop;
 
   // 조이스틱 방향 → 모션 번호 매핑 (기본값)
-  Map<JoystickDirection, int> _joystickMotionMap = {
+  final Map<JoystickDirection, int> _joystickMotionMap = {
     ...JoystickOutput.defaultMotionMap,
   };
 
-  // 인식 결과 (시뮬레이션)
-  List<DetectionResult> _detections = [];
-  bool _isDetecting = false;
+  // YOLO 서비스 (실제 TFLite 추론)
+  late YoloDetectorService _yoloService;
 
   // YOLO 활성화 상태
   bool _isYoloActive = false;
 
-  // 현재 인식 중인 객체
+  // 현재 인식 중인 객체 (YOLO 결과에서 가져옴)
   String _detectedObject = '-';
+
+
 
   @override
   void initState() {
@@ -45,12 +47,35 @@ class _ControlScreenState extends State<ControlScreen>
     final btManager = context.read<BluetoothManager>();
     _motionRepeater = MotionRepeater(btManager);
     context.read<CommandSetManager>().load();
+
+    // YoloDetectorService 초기화 (모델은 YOLO 활성화 시점에 로딩)
+    _yoloService = YoloDetectorService();
+    _yoloService.addListener(_onYoloResultsChanged);
   }
 
   @override
   void dispose() {
     _motionRepeater.dispose();
+    _yoloService.removeListener(_onYoloResultsChanged);
+    _yoloService.dispose();
     super.dispose();
+  }
+
+  /// YOLO 추론 결과 변경 콜백
+  void _onYoloResultsChanged() {
+    if (!mounted) return;
+    final results = _yoloService.results;
+    setState(() {
+      if (results.isNotEmpty) {
+        // 신뢰도 가장 높은 객체를 상태바에 표시
+        final best = results.reduce(
+          (a, b) => a.confidence > b.confidence ? a : b,
+        );
+        _detectedObject = best.label;
+      } else {
+        _detectedObject = '-';
+      }
+    });
   }
 
   void _onJoystickMove(JoystickOutput output) {
@@ -134,17 +159,16 @@ class _ControlScreenState extends State<ControlScreen>
             // ─── 상단 헤더 (앱바) ───
             _buildHeader(btManager),
 
-            // ─── 카메라 프리뷰 (55%) ───
+            // ─── 카메라 프리뷰 (46%) ───
             SizedBox(
               height: size.height * 0.46,
               child: CameraPreviewWidget(
-                detections: _detections,
-                isDetecting: _isDetecting,
                 isYoloActive: _isYoloActive,
+                yoloService: _yoloService,
                 onYoloToggle: () {
                   setState(() {
                     _isYoloActive = !_isYoloActive;
-                    if (_isYoloActive) {
+                    if (!_isYoloActive) {
                       _detectedObject = '-';
                     }
                   });
@@ -364,9 +388,17 @@ class _ControlScreenState extends State<ControlScreen>
             child: _StatusChip(
               icon: _isYoloActive ? Icons.visibility : Icons.visibility_off,
               label: _isYoloActive
-                  ? (_detectedObject == '-' ? 'YOLO ON' : '인식: $_detectedObject')
+                  ? (_yoloService.modelState == YoloModelState.loading
+                      ? 'AI 로딩 ${(_yoloService.loadingProgress * 100).toInt()}%'
+                      : _detectedObject == '-'
+                          ? 'YOLO ON'
+                          : '인식: $_detectedObject')
                   : 'YOLO OFF',
-              color: _isYoloActive ? Colors.greenAccent : Colors.white30,
+              color: _isYoloActive
+                  ? (_yoloService.modelState == YoloModelState.loading
+                      ? Colors.amber
+                      : Colors.greenAccent)
+                  : Colors.white30,
             ),
           ),
         ],
