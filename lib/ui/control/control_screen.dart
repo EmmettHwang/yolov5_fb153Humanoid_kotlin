@@ -6,6 +6,7 @@ import '../../command/command_set_manager.dart';
 import '../../models/action_button_config.dart';
 import '../camera/camera_preview_widget.dart';
 import '../settings/settings_screen.dart';
+import '../bluetooth/bluetooth_scan_screen.dart';
 import 'joystick_view.dart';
 import 'action_button_panel.dart';
 
@@ -89,15 +90,26 @@ class _ControlScreenState extends State<ControlScreen>
         ),
         backgroundColor: Colors.redAccent,
         action: SnackBarAction(
-          label: '설정',
+          label: '연결',
           textColor: Colors.white,
-          onPressed: () => _openSettings(),
+          onPressed: () => _openBluetoothScan(),
         ),
         duration: const Duration(seconds: 2),
       ),
     );
   }
 
+  /// Bluetooth 스캔 화면 직접 열기
+  void _openBluetoothScan() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => const BluetoothScanScreen(isFirstLaunch: false),
+      ),
+    );
+  }
+
+  /// 설정 화면 열기 (버튼 편집 등)
   void _openSettings() {
     Navigator.push(
       context,
@@ -279,7 +291,7 @@ class _ControlScreenState extends State<ControlScreen>
           // 연결 버튼 (미연결 시)
           if (!isConnected)
             GestureDetector(
-              onTap: _openSettings,
+              onTap: _openBluetoothScan,
               child: Container(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
                 decoration: BoxDecoration(

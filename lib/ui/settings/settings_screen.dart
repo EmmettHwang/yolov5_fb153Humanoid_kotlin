@@ -4,6 +4,7 @@ import '../../bluetooth/bluetooth_manager.dart';
 import '../../command/command_set_manager.dart';
 import '../../models/action_button_config.dart';
 import 'button_editor_dialog.dart';
+import '../bluetooth/bluetooth_scan_screen.dart';
 
 /// 설정 화면
 class SettingsScreen extends StatefulWidget {
@@ -21,10 +22,6 @@ class _SettingsScreenState extends State<SettingsScreen>
   void initState() {
     super.initState();
     _tabController = TabController(length: 2, vsync: this);
-    // Bluetooth 스캔 자동 시작
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      context.read<BluetoothManager>().startScan();
-    });
   }
 
   @override
@@ -67,7 +64,8 @@ class _SettingsScreenState extends State<SettingsScreen>
       body: TabBarView(
         controller: _tabController,
         children: [
-          _BluetoothTab(),
+          // Bluetooth 탭 → 전용 스캔 화면 임베드
+          const BluetoothScanScreen(isFirstLaunch: false),
           _ButtonConfigTab(),
         ],
       ),
