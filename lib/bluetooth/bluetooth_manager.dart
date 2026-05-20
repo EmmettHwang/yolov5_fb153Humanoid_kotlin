@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'package:flutter/foundation.dart';
-import 'package:flutter_bluetooth_serial/flutter_bluetooth_serial.dart';
 import 'package:flutter/services.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -22,7 +21,6 @@ class BluetoothDeviceInfo {
 
   const BluetoothDeviceInfo({required this.name, required this.address});
 
-  /// MAC 주소 마지막 4자리 (예: AA:BB)
   String get macSuffix {
     final parts = address.split(':');
     if (parts.length >= 2) {
@@ -31,10 +29,8 @@ class BluetoothDeviceInfo {
     return address.toUpperCase();
   }
 
-  /// 표시 이름: "fb153 [AA:BB]"
   String get displayName => '$name  [$macSuffix]';
 
-  /// fb153 로봇 여부 (FB153 v1.0.0 등 대소문자·공백 무시)
   bool get isFb153Robot {
     final n = name.toLowerCase().replaceAll(' ', '');
     return n.contains('fb153') || n.contains('robot');
@@ -44,19 +40,38 @@ class BluetoothDeviceInfo {
   String toString() => displayName;
 }
 
-/// fb153 로봇 Bluetooth Classic 2.0 (SPP) 관리자
+// ─────────────────────────────────────────────────────────────────────────────
+// BluetoothManager — MethodChannel + EventChannel 기반 네이티브 BT Classic
+//
+// Android 네이티브 (BluetoothClassicPlugin.kt) 연결 전략:
+//   1순위: reflection createRfcommSocket(channel=1)  ← fb153 필수
+//   2순위: createRfcommSocketToServiceRecord(SPP UUID) fallback
+// ─────────────────────────────────────────────────────────────────────────────
 class BluetoothManager extends ChangeNotifier {
   static final BluetoothManager _instance = BluetoothManager._internal();
   factory BluetoothManager() => _instance;
-  BluetoothManager._internal();
+  BluetoothManager._internal() {
+    _eventSub = _eventChannel.receiveBroadcastStream().listen(
+      _onNativeEvent,
+      onError: (e) => debugPrint('[BT] 이벤트 오류: $e'),
+    );
+  }
 
-  // ── 상태 ──────────────────────────────────────────
+  // ── 채널 ──────────────────────────────────────────────────────
+  static const _methodChannel =
+      MethodChannel('com.robocommander/bluetooth');
+  static const _eventChannel =
+      EventChannel('com.robocommander/bluetooth_events');
+
+  StreamSubscription? _eventSub;
+
+  // ── 상태 ──────────────────────────────────────────────────────
   BtConnectionState _connectionState = BtConnectionState.disconnected;
   BtConnectionState get connectionState => _connectionState;
-  bool get isConnected => _connectionState == BtConnectionState.connected;
-  bool get isScanning  => _connectionState == BtConnectionState.scanning;
+  bool get isConnected  => _connectionState == BtConnectionState.connected;
+  bool get isScanning   => _connectionState == BtConnectionState.scanning;
 
-  // ── 기기 정보 ────────────────────────────────────
+  // ── 기기 정보 ─────────────────────────────────────────────────
   BluetoothDeviceInfo? _connectedDevice;
   BluetoothDeviceInfo? get connectedDevice => _connectedDevice;
 
@@ -64,10 +79,7 @@ class BluetoothManager extends ChangeNotifier {
   List<BluetoothDeviceInfo> get discoveredDevices =>
       List.unmodifiable(_discoveredDevices);
 
-  // ── 연결 소켓 ───────────────────────────────────
-  BluetoothConnection? _connection;
-
-  // ── 오류 / 통계 ──────────────────────────────────
+  // ── 오류 / 통계 ───────────────────────────────────────────────
   String? _errorMessage;
   String? get errorMessage => _errorMessage;
 
@@ -77,55 +89,52 @@ class BluetoothManager extends ChangeNotifier {
   int _latencyMs = 0;
   int get latencyMs => _latencyMs;
 
-  // ── 마지막 연결 기기 (자동 재연결용) ───────────────
+  // ── 마지막 연결 기기 (자동 재연결용) ──────────────────────────
   static const _prefKeyLastMac  = 'last_connected_mac';
   static const _prefKeyLastName = 'last_connected_name';
 
   String? _lastMac;
   String? get lastMac => _lastMac;
 
-  // ── 내부 유틸 ───────────────────────────────────
+  // ─────────────────────────────────────────────────────────────
   void _setState(BtConnectionState state) {
     _connectionState = state;
     notifyListeners();
   }
 
-  // ══════════════════════════════════════════════════
-  //  초기화 - 마지막 연결 기기 복원
-  // ══════════════════════════════════════════════════
+  // ══════════════════════════════════════════════════════════════
+  //  초기화 — 마지막 연결 기기 복원
+  // ══════════════════════════════════════════════════════════════
   Future<void> init() async {
     final prefs = await SharedPreferences.getInstance();
     _lastMac = prefs.getString(_prefKeyLastMac);
     final lastName = prefs.getString(_prefKeyLastName);
     if (_lastMac != null && lastName != null) {
-      if (kDebugMode) debugPrint('마지막 연결 기기 복원: $lastName [$_lastMac]');
+      debugPrint('[BT] 마지막 연결 기기 복원: $lastName [$_lastMac]');
     }
   }
 
-  // ══════════════════════════════════════════════════
-  //  Bluetooth 활성화
-  // ══════════════════════════════════════════════════
+  // ══════════════════════════════════════════════════════════════
+  //  Bluetooth 활성화 확인
+  // ══════════════════════════════════════════════════════════════
   Future<bool> isBluetoothEnabled() async {
     try {
-      return await FlutterBluetoothSerial.instance.isEnabled ?? false;
+      return await _methodChannel.invokeMethod<bool>('isBluetoothEnabled') ??
+          false;
     } catch (_) {
       return false;
     }
   }
 
   Future<bool> requestEnable() async {
-    try {
-      return await FlutterBluetoothSerial.instance.requestEnable() ?? false;
-    } catch (_) {
-      return false;
-    }
+    // Android 13+에서는 직접 켜기 API 없음 — 사용자에게 유도
+    return await isBluetoothEnabled();
   }
 
-  // ══════════════════════════════════════════════════
+  // ══════════════════════════════════════════════════════════════
   //  BT 권한 확인 (Android 12+)
-  // ══════════════════════════════════════════════════
+  // ══════════════════════════════════════════════════════════════
   Future<bool> _ensureBluetoothPermissions() async {
-    // Android 12+ 에서 BLUETOOTH_CONNECT 런타임 권한 필요
     final connectStatus = await Permission.bluetoothConnect.status;
     if (connectStatus.isDenied || connectStatus.isRestricted) {
       final result = await Permission.bluetoothConnect.request();
@@ -138,25 +147,21 @@ class BluetoothManager extends ChangeNotifier {
 
     final scanStatus = await Permission.bluetoothScan.status;
     if (scanStatus.isDenied || scanStatus.isRestricted) {
-      final result = await Permission.bluetoothScan.request();
-      if (!result.isGranted) {
-        debugPrint('[BT] BLUETOOTH_SCAN 권한 거부됨 (무시하고 계속)');
-        // scan 권한 없어도 getBondedDevices는 동작 가능
-      }
+      await Permission.bluetoothScan.request();
+      // scan 권한 없어도 getBondedDevices 동작 가능 — 계속 진행
     }
 
     return true;
   }
 
-  // ══════════════════════════════════════════════════
-  //  스캔 - 페어링된 기기 목록 + fb153 필터
-  // ══════════════════════════════════════════════════
+  // ══════════════════════════════════════════════════════════════
+  //  스캔 — 페어링된 기기 목록 + fb153 필터
+  // ══════════════════════════════════════════════════════════════
   Future<void> startScan({String filterPrefix = 'fb153'}) async {
     _discoveredDevices.clear();
     _errorMessage = null;
     _setState(BtConnectionState.scanning);
 
-    // ✅ 권한 확인 먼저
     final hasPermission = await _ensureBluetoothPermissions();
     if (!hasPermission) {
       _setState(BtConnectionState.error);
@@ -164,153 +169,108 @@ class BluetoothManager extends ChangeNotifier {
     }
 
     try {
-      final bonded = await FlutterBluetoothSerial.instance.getBondedDevices();
-
-      // fb153 관련 기기 필터 (대소문자 무시, 공백 제거 후 매칭)
-      // 예: "fb153", "FB153", "FB153 v1.0.0", "FB153_v2" 모두 매칭
-      final fb153List = bonded.where((d) {
-        if (filterPrefix.isEmpty) return true;
-        final n = (d.name ?? '').toLowerCase().replaceAll(' ', '');
-        final f = filterPrefix.toLowerCase().replaceAll(' ', '');
-        return n.contains(f);
+      final raw = await _methodChannel.invokeMethod<List>('getBondedDevices');
+      final bonded = (raw ?? []).map((e) {
+        final m = Map<String, dynamic>.from(e as Map);
+        return BluetoothDeviceInfo(
+          name:    m['name']    as String? ?? '알 수 없는 기기',
+          address: m['address'] as String? ?? '',
+        );
       }).toList();
 
-      // fb153 기기가 있으면 해당 목록만, 없으면 전체 페어링 기기 표시
+      // fb153 필터
+      final fb153List = filterPrefix.isEmpty
+          ? bonded
+          : bonded.where((d) {
+              final n = d.name.toLowerCase().replaceAll(' ', '');
+              final f = filterPrefix.toLowerCase().replaceAll(' ', '');
+              return n.contains(f);
+            }).toList();
+
+      // fb153 없으면 전체 페어링 기기
       final targetList = fb153List.isNotEmpty ? fb153List : bonded;
 
-      for (final d in targetList) {
-        _discoveredDevices.add(BluetoothDeviceInfo(
-          name: d.name?.isNotEmpty == true ? d.name! : '알 수 없는 기기',
-          address: d.address,
-        ));
-      }
-
-      // MAC 주소 마지막 4자리 기준 정렬
-      _discoveredDevices.sort((a, b) => a.macSuffix.compareTo(b.macSuffix));
+      _discoveredDevices.addAll(
+        targetList..sort((a, b) => a.macSuffix.compareTo(b.macSuffix)),
+      );
 
       _setState(BtConnectionState.disconnected);
-    } catch (e) {
-      _errorMessage = '스캔 오류: $e';
+    } on PlatformException catch (e) {
+      _errorMessage = '스캔 오류: ${e.message}';
       _setState(BtConnectionState.error);
     }
   }
 
-  // ══════════════════════════════════════════════════
-  //  자동 재연결 - 마지막 기기로 자동 연결 시도
-  // ══════════════════════════════════════════════════
+  // ══════════════════════════════════════════════════════════════
+  //  자동 재연결
+  // ══════════════════════════════════════════════════════════════
   Future<bool> tryAutoReconnect() async {
     if (_lastMac == null) return false;
     if (isConnected) return true;
 
     final prefs = await SharedPreferences.getInstance();
     final lastName = prefs.getString(_prefKeyLastName) ?? 'fb153 로봇';
-
-    final device = BluetoothDeviceInfo(name: lastName, address: _lastMac!);
-    if (kDebugMode) debugPrint('자동 재연결 시도: ${device.displayName}');
-
-    await connect(device);
+    await connect(BluetoothDeviceInfo(name: lastName, address: _lastMac!));
     return isConnected;
   }
 
-  // ══════════════════════════════════════════════════
-  //  연결
-  // ══════════════════════════════════════════════════
+  // ══════════════════════════════════════════════════════════════
+  //  연결 — 네이티브로 위임 (ch1 reflection 우선)
+  // ══════════════════════════════════════════════════════════════
   Future<void> connect(BluetoothDeviceInfo device) async {
     if (isConnected) await disconnect();
 
     _setState(BtConnectionState.connecting);
     _errorMessage = null;
 
-    // 최대 2회 시도 (already bonded / read failed 에러 재시도 포함)
-    for (int attempt = 1; attempt <= 2; attempt++) {
-      try {
-        if (kDebugMode) debugPrint('BT 연결 시도 $attempt: ${device.displayName}');
+    try {
+      await _methodChannel.invokeMethod<bool>(
+        'connect',
+        {'address': device.address},
+      );
+      // 실제 연결 완료는 EventChannel 'connected' 이벤트로 처리됨
+      _connectedDevice = device;
 
-        _connection = await BluetoothConnection.toAddress(device.address)
-            .timeout(const Duration(seconds: 12));
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_prefKeyLastMac,  device.address);
+      await prefs.setString(_prefKeyLastName, device.name);
+      _lastMac = device.address;
 
-        _connectedDevice = device;
-
-        // 마지막 연결 기기 저장 (자동 재연결용)
-        final prefs = await SharedPreferences.getInstance();
-        await prefs.setString(_prefKeyLastMac, device.address);
-        await prefs.setString(_prefKeyLastName, device.name);
-        _lastMac = device.address;
-
-        _setState(BtConnectionState.connected);
-
-        // 연결 끊김 감지
-        _connection!.input?.listen(
-          (_) {},
-          onDone: () {
-            if (kDebugMode) debugPrint('Bluetooth 연결 종료됨');
-            _onDisconnected();
-          },
-          onError: (e) {
-            if (kDebugMode) debugPrint('Bluetooth 오류: $e');
-            _onDisconnected();
-          },
-          cancelOnError: true,
-        );
-        return; // 성공 시 종료
-
-      } on TimeoutException {
-        _errorMessage = '연결 시간 초과 (12초) — 로봇 전원 확인';
-        _connectedDevice = null;
-        _setState(BtConnectionState.error);
-        return; // 타임아웃은 재시도 없음
-
-      } on PlatformException catch (e) {
-        final msg = e.message?.toLowerCase() ?? '';
-        final isRetryable = msg.contains('already') ||
-            msg.contains('read failed') ||
-            msg.contains('socket might closed') ||
-            msg.contains('broken pipe') ||
-            msg.contains('connection was already requested') ||
-            msg.contains('bonded');
-
-        if (kDebugMode) debugPrint('BT PlatformException (시도 $attempt): ${e.message}');
-
-        if (isRetryable && attempt == 1) {
-          // "already bonded" 류 에러: 기존 소켓 정리 후 재시도
-          if (kDebugMode) debugPrint('→ already bonded 에러 감지 — 소켓 정리 후 재시도...');
-          try { await _connection?.close(); } catch (_) {}
-          _connection = null;
-          // 0.8초 대기 후 재시도 (Android BT 스택 안정화)
-          await Future.delayed(const Duration(milliseconds: 800));
-          continue; // 2회차 시도
-        }
-
-        // 재시도해도 실패하거나 다른 에러
-        _errorMessage = _buildErrorMessage(e.message);
-        _connectedDevice = null;
-        _setState(BtConnectionState.error);
-        return;
-
-      } catch (e) {
-        final msg = e.toString().toLowerCase();
-        final isRetryable = msg.contains('already') ||
-            msg.contains('read failed') ||
-            msg.contains('socket') ||
-            msg.contains('bonded');
-
-        if (isRetryable && attempt == 1) {
-          if (kDebugMode) debugPrint('→ 연결 에러 재시도: $e');
-          try { await _connection?.close(); } catch (_) {}
-          _connection = null;
-          await Future.delayed(const Duration(milliseconds: 800));
-          continue;
-        }
-
-        _errorMessage = '연결 실패: $e';
-        _connectedDevice = null;
-        _setState(BtConnectionState.error);
-        return;
-      }
+    } on PlatformException catch (e) {
+      _errorMessage = _buildErrorMessage(e.message);
+      _connectedDevice = null;
+      _setState(BtConnectionState.error);
     }
   }
 
-  /// 에러 메시지를 사용자 친화적으로 변환
+  // ══════════════════════════════════════════════════════════════
+  //  네이티브 이벤트 수신 (connected / disconnected / data / error)
+  // ══════════════════════════════════════════════════════════════
+  void _onNativeEvent(dynamic event) {
+    if (event is! Map) return;
+    final type = event['type'] as String? ?? '';
+
+    switch (type) {
+      case 'connected':
+        _setState(BtConnectionState.connected);
+
+      case 'disconnected':
+        _connectedDevice = null;
+        if (_connectionState != BtConnectionState.error) {
+          _setState(BtConnectionState.disconnected);
+        }
+
+      case 'error':
+        _errorMessage = event['message'] as String?;
+        _connectedDevice = null;
+        _setState(BtConnectionState.error);
+
+      case 'data':
+        // 수신 데이터 (필요 시 확장)
+        debugPrint('[BT] 수신 데이터: ${event['bytes']}');
+    }
+  }
+
   String _buildErrorMessage(String? raw) {
     if (raw == null) return '연결 실패 — 다시 시도하세요';
     final msg = raw.toLowerCase();
@@ -326,40 +286,35 @@ class BluetoothManager extends ChangeNotifier {
     return '연결 실패: $raw';
   }
 
-  void _onDisconnected() {
-    _connection = null;
-    _connectedDevice = null;
-    _setState(BtConnectionState.disconnected);
-  }
-
-  // ══════════════════════════════════════════════════
+  // ══════════════════════════════════════════════════════════════
   //  연결 해제
-  // ══════════════════════════════════════════════════
+  // ══════════════════════════════════════════════════════════════
   Future<void> disconnect() async {
     try {
-      await _connection?.close();
+      await _methodChannel.invokeMethod<bool>('disconnect');
     } catch (_) {}
-    _connection = null;
     _connectedDevice = null;
     _setState(BtConnectionState.disconnected);
   }
 
-  // ══════════════════════════════════════════════════
+  // ══════════════════════════════════════════════════════════════
   //  패킷 전송
-  // ══════════════════════════════════════════════════
+  // ══════════════════════════════════════════════════════════════
   Future<bool> sendPacket(List<int> packet) async {
-    if (!isConnected || _connection == null) return false;
+    if (!isConnected) return false;
+    final sw = Stopwatch()..start();
     try {
-      final sw = Stopwatch()..start();
-      _connection!.output.add(Uint8List.fromList(packet));
-      await _connection!.output.allSent;
+      await _methodChannel.invokeMethod<bool>(
+        'send',
+        {'data': Uint8List.fromList(packet)},
+      );
       sw.stop();
       _latencyMs = sw.elapsedMilliseconds;
       _packetsSent++;
       notifyListeners();
       return true;
-    } catch (e) {
-      if (kDebugMode) debugPrint('패킷 전송 오류: $e');
+    } on PlatformException catch (e) {
+      debugPrint('[BT] 전송 오류: ${e.message}');
       return false;
     }
   }
@@ -376,6 +331,7 @@ class BluetoothManager extends ChangeNotifier {
 
   @override
   void dispose() {
+    _eventSub?.cancel();
     disconnect();
     super.dispose();
   }

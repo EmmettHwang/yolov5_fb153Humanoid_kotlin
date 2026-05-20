@@ -1,7 +1,7 @@
 name: robo_commander
 description: fb153 휴머노이드 로봇 Bluetooth 제어 앱
 publish_to: 'none'
-version: 1.0.250520140624+14
+version: 1.0.250520181205+15
 
 environment:
   sdk: '>=3.0.0 <4.0.0'
@@ -15,9 +15,6 @@ dependencies:
 
   # Local storage
   shared_preferences: 2.5.3
-
-  # Bluetooth Classic (Android)
-  flutter_bluetooth_serial: 0.4.0
 
   # Camera
   camera: 0.11.1

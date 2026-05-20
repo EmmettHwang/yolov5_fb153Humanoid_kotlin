@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:flutter_bluetooth_serial/flutter_bluetooth_serial.dart';
 import '../../bluetooth/bluetooth_manager.dart';
 import '../control/control_screen.dart';
 
@@ -738,8 +738,10 @@ class _BluetoothScanScreenState extends State<BluetoothScanScreen>
       SharedPreferences.getInstance();
 
   void _openSystemBluetooth() {
-    // Android 설정 앱 블루투스로 이동 (Intent)
-    // flutter_bluetooth_serial에서 openSettings 지원
-    FlutterBluetoothSerial.instance.openSettings();
+    // Android 시스템 블루투스 설정 열기 (Intent)
+    const platform = MethodChannel('com.robocommander/bluetooth');
+    platform.invokeMethod<void>('openBluetoothSettings').catchError((_) {
+      // 지원 안 하면 무시 (시스템 설정 직접 이동 불가 시 fallback 없음)
+    });
   }
 }
