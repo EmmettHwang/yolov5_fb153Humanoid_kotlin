@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:camera/camera.dart';
@@ -6,277 +7,224 @@ import 'package:tflite_flutter/tflite_flutter.dart';
 import 'package:image/image.dart' as img;
 import '../ui/camera/camera_preview_widget.dart';
 
-/// YOLO 모델 로딩 상태
-enum YoloModelState {
-  idle,
-  loading,
-  ready,
-  error,
-}
+// ─────────────────────────────────────────────────────────────────────────────
+// EfficientDet-Lite0 TFLite 사물인식 서비스
+//
+// 모델: EfficientDet-Lite0 (Google MediaPipe 공식)
+//   - 파일: assets/models/efficientdet_lite0.tflite (13.2 MB)
+//   - 입력: [1, 320, 320, 3]  float32  RGB  0~255
+//   - 출력:
+//       [0] boxes   [1, 25, 4]   — [top, left, bottom, right] 정규화 0~1
+//       [1] classes [1, 25]      — 클래스 인덱스 (float)
+//       [2] scores  [1, 25]      — 신뢰도 0~1
+//       [3] count   [1]          — 유효 탐지 개수
+//   - 레이블: COCO 80 클래스 (assets/models/labels.txt)
+// ─────────────────────────────────────────────────────────────────────────────
 
-/// TFLite 기반 사물인식 서비스
-/// MobileNet SSD v1 COCO (4MB) 사용 — 80 클래스
+/// 모델 로딩 상태
+enum YoloModelState { idle, loading, ready, error }
+
 class YoloDetectorService extends ChangeNotifier {
-  static const String _modelPath = 'assets/models/yolov5s.tflite';
-  static const String _labelsPath = 'assets/models/labels.txt';
+  // ── 경로 ──────────────────────────────────────────────────────────────────
+  static const String _modelAsset  = 'assets/models/efficientdet_lite0.tflite';
+  static const String _labelsAsset = 'assets/models/labels.txt';
 
-  // 모델 입력 크기 (MobileNet SSD: 300×300)
-  static const int _inputSize = 300;
-  static const double _confidenceThreshold = 0.45;
-  // ignore: unused_field
-  static const double _iouThreshold = 0.45;
-  static const int _maxDetections = 10;
+  // ── 모델 파라미터 ─────────────────────────────────────────────────────────
+  static const int    _inputSize   = 320;   // EfficientDet-Lite0 입력 크기
+  static const int    _maxDetect   = 25;    // 모델 최대 탐지 수
+  static const double _threshold   = 0.40; // 신뢰도 임계값
 
-  Interpreter? _interpreter;
-  List<String> _labels = [];
+  // ── 상태 ─────────────────────────────────────────────────────────────────
+  Interpreter?       _interpreter;
+  List<String>       _labels       = [];
 
-  YoloModelState _modelState = YoloModelState.idle;
-  YoloModelState get modelState => _modelState;
+  YoloModelState     _state        = YoloModelState.idle;
+  YoloModelState get modelState    => _state;
 
-  double _loadingProgress = 0.0;
-  double get loadingProgress => _loadingProgress;
+  double             _progress     = 0.0;
+  double get        loadingProgress => _progress;
 
-  String _errorMessage = '';
-  String get errorMessage => _errorMessage;
+  String             _error        = '';
+  String get        errorMessage   => _error;
 
-  bool _isRunning = false;
-  bool get isRunning => _isRunning;
-
-  // 추론 결과
-  List<DetectionResult> _results = [];
+  List<DetectionResult> _results   = [];
   List<DetectionResult> get results => List.unmodifiable(_results);
 
-  // 마지막 추론 시간 (ms)
-  int _inferenceMs = 0;
-  int get inferenceMs => _inferenceMs;
+  int                _inferenceMs  = 0;
+  int get           inferenceMs    => _inferenceMs;
 
-  // 프레임 처리 throttle (초당 최대 10 프레임)
-  DateTime? _lastFrameTime;
-  static const _frameIntervalMs = 100; // 10fps
+  bool               _running      = false;
+  bool               _disposed     = false;
 
-  bool _disposed = false;
+  // 프레임 throttle — 최대 8fps
+  DateTime?          _lastFrame;
+  static const int   _frameGapMs  = 125;
 
-  /// 모델 초기화 (로딩 프로그레스 콜백 포함)
+  // ── 초기화 ───────────────────────────────────────────────────────────────
   Future<void> initialize() async {
-    if (_modelState == YoloModelState.loading ||
-        _modelState == YoloModelState.ready) return;
+    if (_state == YoloModelState.loading || _state == YoloModelState.ready) return;
 
-    _setModelState(YoloModelState.loading);
+    _setState(YoloModelState.loading);
     _setProgress(0.0);
 
     try {
-      // Step 1: 레이블 로딩 (10%)
+      // 1) 레이블 로딩
       _setProgress(0.1);
-      await _loadLabels();
-      _setProgress(0.3);
+      final raw = await rootBundle.loadString(_labelsAsset);
+      _labels = raw.split('\n').map((s) => s.trim()).where((s) => s.isNotEmpty).toList();
+      debugPrint('[OD] 레이블 ${_labels.length}개 로딩 완료');
+      _setProgress(0.35);
 
-      // Step 2: TFLite 모델 로딩 (30% → 90%)
-      await _loadModel();
-      _setProgress(0.9);
+      // 2) 모델 로딩 (멀티스레드 옵션)
+      final opts = InterpreterOptions()..threads = 2;
+      _interpreter = await Interpreter.fromAsset(_modelAsset, options: opts);
+      _setProgress(0.85);
+      debugPrint('[OD] 입력 shape : ${_interpreter!.getInputTensor(0).shape}');
+      debugPrint('[OD] 출력 텐서 수: ${_interpreter!.getOutputTensors().length}');
 
-      // Step 3: 워밍업 (더미 추론)
+      // 3) 워밍업 — 첫 추론은 항상 느리므로 더미로 미리 실행
+      _setProgress(0.92);
       await _warmup();
       _setProgress(1.0);
 
-      _setModelState(YoloModelState.ready);
-      debugPrint('[YOLO] ✅ 모델 초기화 완료: $_labels.length 클래스');
-    } catch (e) {
-      _errorMessage = '모델 로딩 실패: $e';
-      _setModelState(YoloModelState.error);
-      debugPrint('[YOLO] ❌ 초기화 오류: $e');
+      _setState(YoloModelState.ready);
+      debugPrint('[OD] ✅ EfficientDet-Lite0 준비 완료');
+    } catch (e, st) {
+      _error = '모델 로딩 실패: $e';
+      _setState(YoloModelState.error);
+      debugPrint('[OD] ❌ 초기화 오류: $e\n$st');
     }
-  }
-
-  Future<void> _loadLabels() async {
-    final labelsData = await rootBundle.loadString(_labelsPath);
-    _labels = labelsData
-        .split('\n')
-        .map((s) => s.trim())
-        .where((s) => s.isNotEmpty)
-        .toList();
-    debugPrint('[YOLO] 레이블 로딩: ${_labels.length}개');
-  }
-
-  Future<void> _loadModel() async {
-    // TFLite Interpreter 옵션
-    final options = InterpreterOptions()
-      ..threads = 2; // 멀티스레드 추론
-
-    _interpreter = await Interpreter.fromAsset(
-      _modelPath,
-      options: options,
-    );
-    debugPrint('[YOLO] 모델 로딩 완료');
-    debugPrint('[YOLO] 입력 텐서: ${_interpreter!.getInputTensor(0).shape}');
-    debugPrint('[YOLO] 출력 텐서 수: ${_interpreter!.getOutputTensors().length}');
   }
 
   Future<void> _warmup() async {
     if (_interpreter == null) return;
     try {
-      // 더미 데이터로 워밍업
-      final dummyInput = List.generate(
-        1,
-        (_) => List.generate(
-          _inputSize,
-          (_) => List.generate(
-            _inputSize,
-            (_) => List<double>.filled(3, 0.0),
-          ),
-        ),
-      );
-      final outputs = _buildOutputBuffers();
-      _interpreter!.runForMultipleInputs([dummyInput], outputs);
-      debugPrint('[YOLO] 워밍업 완료');
-    } catch (e) {
-      debugPrint('[YOLO] 워밍업 중 오류 (무시): $e');
-    }
+      final dummy = _buildDummyInput();
+      final out   = _buildOutputBuffers();
+      _interpreter!.runForMultipleInputs([dummy], out);
+    } catch (_) {}
   }
 
-  /// MobileNet SSD 출력 버퍼 구성
-  /// 출력: [boxes(1,10,4), classes(1,10), scores(1,10), count(1)]
-  Map<int, Object> _buildOutputBuffers() {
-    return {
-      0: List.generate(1, (_) => List.generate(_maxDetections, (_) => List<double>.filled(4, 0.0))),
-      1: List.generate(1, (_) => List<double>.filled(_maxDetections, 0.0)),
-      2: List.generate(1, (_) => List<double>.filled(_maxDetections, 0.0)),
-      3: List<double>.filled(1, 0.0),
-    };
-  }
+  // ── 출력 버퍼 ────────────────────────────────────────────────────────────
+  // EfficientDet-Lite0 출력:
+  //   index 0 → boxes   Float32List [1][25][4]
+  //   index 1 → classes Float32List [1][25]
+  //   index 2 → scores  Float32List [1][25]
+  //   index 3 → count   Float32List [1]
+  Map<int, Object> _buildOutputBuffers() => {
+        0: [List.generate(_maxDetect, (_) => List<double>.filled(4, 0.0))],
+        1: [List<double>.filled(_maxDetect, 0.0)],
+        2: [List<double>.filled(_maxDetect, 0.0)],
+        3: [0.0],
+      };
 
-  /// CameraImage 프레임 처리 (비동기 추론)
-  Future<void> processFrame(CameraImage cameraImage, Size previewSize) async {
-    if (_interpreter == null || _modelState != YoloModelState.ready) return;
-  if (_isRunning) return;
+  List<List<List<List<double>>>> _buildDummyInput() =>
+      List.generate(1, (_) =>
+        List.generate(_inputSize, (_) =>
+          List.generate(_inputSize, (_) =>
+            List<double>.filled(3, 0.0))));
 
-    // 프레임 throttle
+  // ── 프레임 처리 ──────────────────────────────────────────────────────────
+  Future<void> processFrame(CameraImage frame, Size displaySize) async {
+    if (_interpreter == null || _state != YoloModelState.ready) return;
+    if (_running) return;
+
+    // throttle
     final now = DateTime.now();
-    if (_lastFrameTime != null &&
-        now.difference(_lastFrameTime!).inMilliseconds < _frameIntervalMs) {
-      return;
-    }
-    _lastFrameTime = now;
+    if (_lastFrame != null &&
+        now.difference(_lastFrame!).inMilliseconds < _frameGapMs) return;
+    _lastFrame = now;
 
-    _isRunning = true;
-    final stopwatch = Stopwatch()..start();
+    _running = true;
+    final sw = Stopwatch()..start();
 
     try {
-      // 1. 카메라 이미지 → RGB Float32 [1,300,300,3]
-      final inputData = await compute(_preprocessFrame, {
-        'yuv': _yuv420ToBytes(cameraImage),
-        'width': cameraImage.width,
-        'height': cameraImage.height,
-        'inputSize': _inputSize,
+      // 1) YUV420 → RGB → resize 320×320 (isolate)
+      final input = await compute(_yuv420ToInput, {
+        'y'      : Uint8List.fromList(frame.planes[0].bytes),
+        'u'      : Uint8List.fromList(frame.planes[1].bytes),
+        'v'      : Uint8List.fromList(frame.planes[2].bytes),
+        'width'  : frame.width,
+        'height' : frame.height,
+        'rowStrideY' : frame.planes[0].bytesPerRow,
+        'rowStrideUV': frame.planes[1].bytesPerRow,
+        'pixStrideUV': frame.planes[1].bytesPerPixel ?? 1,
+        'inputSize'  : _inputSize,
       });
 
-      if (inputData == null) {
-        _isRunning = false;
-        return;
-      }
+      if (input == null) { _running = false; return; }
 
-      // 2. 추론
-      final outputs = _buildOutputBuffers();
-      _interpreter!.runForMultipleInputs([inputData], outputs);
+      // 2) 추론 (메인 스레드에서 실행 — tflite_flutter 권장 방식)
+      final out = _buildOutputBuffers();
+      _interpreter!.runForMultipleInputs([input], out);
 
-      // 3. 결과 파싱
-      final detections = _parseOutputs(outputs, previewSize);
+      // 3) 파싱
+      final detections = _parseOutput(out, displaySize);
 
-      stopwatch.stop();
-      _inferenceMs = stopwatch.elapsedMilliseconds;
+      sw.stop();
+      _inferenceMs = sw.elapsedMilliseconds;
 
       if (!_disposed) {
         _results = detections;
         notifyListeners();
       }
     } catch (e) {
-      debugPrint('[YOLO] 추론 오류: $e');
+      debugPrint('[OD] 추론 오류: $e');
     } finally {
-      _isRunning = false;
+      _running = false;
     }
   }
 
-  /// YUV420 → 바이트 배열 변환 (isolate 전달용)
-  Uint8List _yuv420ToBytes(CameraImage image) {
-    final yPlane = image.planes[0];
-    final uPlane = image.planes[1];
-    final vPlane = image.planes[2];
+  // ── 결과 파싱 ────────────────────────────────────────────────────────────
+  List<DetectionResult> _parseOutput(Map<int, Object> out, Size displaySize) {
+    // out[0]: [[ [top,left,bottom,right], ... ]]  → [0][i][0..3]
+    // out[1]: [[ classIdx, ... ]]                 → [0][i]
+    // out[2]: [[ score, ... ]]                    → [0][i]
+    // out[3]: [ count ]                           → scalar
 
-    final int yLen = yPlane.bytes.length;
-    final int uvLen = uPlane.bytes.length;
+    final rawBoxes   = (out[0] as List)[0] as List;   // List of [top,left,bottom,right]
+    final rawClasses = (out[1] as List)[0] as List;   // List of classIdx (float)
+    final rawScores  = (out[2] as List)[0] as List;   // List of score
+    final count      = ((out[3] as List)[0] as double).toInt().clamp(0, _maxDetect);
 
-    final result = Uint8List(yLen + uvLen * 2);
-    result.setRange(0, yLen, yPlane.bytes);
-    result.setRange(yLen, yLen + uvLen, uPlane.bytes);
-    result.setRange(yLen + uvLen, yLen + uvLen * 2, vPlane.bytes);
+    final results = <DetectionResult>[];
+    final W = displaySize.width;
+    final H = displaySize.height;
 
-    return result;
-  }
+    for (int i = 0; i < count; i++) {
+      final score = (rawScores[i] as double);
+      if (score < _threshold) continue;
 
-  /// MobileNet SSD 출력 파싱
-  List<DetectionResult> _parseOutputs(
-      Map<int, Object> outputs, Size previewSize) {
-    final List<List<List<double>>> boxes =
-        (outputs[0] as List<dynamic>).map((e) =>
-          (e as List<dynamic>).map((row) =>
-            (row as List<dynamic>).map((v) => (v as double)).toList()
-          ).toList()
-        ).toList();
-    final List<List<double>> classes =
-        (outputs[1] as List<dynamic>).map((e) =>
-          (e as List<dynamic>).map((v) => (v as double)).toList()
-        ).toList();
-    final List<List<double>> scores =
-        (outputs[2] as List<dynamic>).map((e) =>
-          (e as List<dynamic>).map((v) => (v as double)).toList()
-        ).toList();
-    final int count = (outputs[3] as List<double>)[0].toInt();
+      final box = rawBoxes[i] as List;
+      final top    = (box[0] as double).clamp(0.0, 1.0);
+      final left   = (box[1] as double).clamp(0.0, 1.0);
+      final bottom = (box[2] as double).clamp(0.0, 1.0);
+      final right  = (box[3] as double).clamp(0.0, 1.0);
 
-    final List<DetectionResult> detections = [];
+      final rect = Rect.fromLTRB(left * W, top * H, right * W, bottom * H);
+      if (rect.width < 15 || rect.height < 15) continue;
 
-    final displayW = previewSize.width;
-    final displayH = previewSize.height;
+      final classIdx = (rawClasses[i] as double).toInt();
+      final label = classIdx < _labels.length ? _labels[classIdx] : 'object';
 
-    for (int i = 0; i < count && i < _maxDetections; i++) {
-      final score = scores[0][i];
-      if (score < _confidenceThreshold) continue;
-
-      final classIdx = classes[0][i].toInt();
-      final label = classIdx < _labels.length ? _labels[classIdx] : 'unknown';
-
-      // MobileNet SSD: box = [top, left, bottom, right] (정규화 0~1)
-      final top = boxes[0][i][0].clamp(0.0, 1.0);
-      final left = boxes[0][i][1].clamp(0.0, 1.0);
-      final bottom = boxes[0][i][2].clamp(0.0, 1.0);
-      final right = boxes[0][i][3].clamp(0.0, 1.0);
-
-      final rect = Rect.fromLTRB(
-        left * displayW,
-        top * displayH,
-        right * displayW,
-        bottom * displayH,
-      );
-
-      // 너무 작은 박스 제외
-      if (rect.width < 20 || rect.height < 20) continue;
-
-      detections.add(DetectionResult(
+      results.add(DetectionResult(
         label: label,
         confidence: score,
         rect: rect,
         classIndex: classIdx,
       ));
     }
-
-    return detections;
+    return results;
   }
 
-  void _setModelState(YoloModelState state) {
-    _modelState = state;
+  // ── 내부 유틸 ────────────────────────────────────────────────────────────
+  void _setState(YoloModelState s) {
+    _state = s;
     if (!_disposed) notifyListeners();
   }
 
-  void _setProgress(double progress) {
-    _loadingProgress = progress;
+  void _setProgress(double v) {
+    _progress = v;
     if (!_disposed) notifyListeners();
   }
 
@@ -293,70 +241,64 @@ class YoloDetectorService extends ChangeNotifier {
   }
 }
 
-// ──────────────────────────────────────────────────────────
-// compute() isolate에서 실행되는 전처리 함수 (순수 함수 필수)
-// ──────────────────────────────────────────────────────────
-
-/// YUV420 바이트 → RGB Float32 [1, inputSize, inputSize, 3]
-List<List<List<List<double>>>>? _preprocessFrame(Map<String, dynamic> args) {
+// ─────────────────────────────────────────────────────────────────────────────
+// compute() isolate 함수 — YUV420 → Float32 입력 텐서 [1, 320, 320, 3]
+// ─────────────────────────────────────────────────────────────────────────────
+List<List<List<List<double>>>>? _yuv420ToInput(Map<String, dynamic> args) {
   try {
-    final Uint8List yuvBytes = args['yuv'] as Uint8List;
-    final int width = args['width'] as int;
-    final int height = args['height'] as int;
-    final int inputSize = args['inputSize'] as int;
+    final Uint8List y           = args['y']           as Uint8List;
+    final Uint8List u           = args['u']           as Uint8List;
+    final Uint8List v           = args['v']           as Uint8List;
+    final int       width       = args['width']       as int;
+    final int       height      = args['height']      as int;
+    final int       rowStrideY  = args['rowStrideY']  as int;
+    final int       rowStrideUV = args['rowStrideUV'] as int;
+    final int       pixStrideUV = args['pixStrideUV'] as int;
+    final int       inputSize   = args['inputSize']   as int;
 
-    // YUV → img.Image 변환 (간소화: Y 채널만으로 그레이스케일 후 RGB 확장)
-    final rgbImage = img.Image(width: width, height: height);
+    // YUV420 → img.Image (RGB)
+    final rgb = img.Image(width: width, height: height);
 
-    final int yLen = width * height;
-    for (int y = 0; y < height; y++) {
-      for (int x = 0; x < width; x++) {
-        final int yIndex = y * width + x;
-        final int uvIndex = yLen + (y ~/ 2) * (width ~/ 2) + (x ~/ 2);
+    for (int row = 0; row < height; row++) {
+      for (int col = 0; col < width; col++) {
+        final yIdx  = row * rowStrideY + col;
+        final uvRow = row >> 1;
+        final uvCol = col >> 1;
+        final uvIdx = uvRow * rowStrideUV + uvCol * pixStrideUV;
 
-        final int yVal = yuvBytes[yIndex];
-        final int uVal = uvIndex < yuvBytes.length ? yuvBytes[uvIndex] - 128 : 0;
-        final int vVal = (uvIndex + yLen ~/ 4) < yuvBytes.length
-            ? yuvBytes[uvIndex + yLen ~/ 4] - 128
-            : 0;
+        final yv = yIdx < y.length ? y[yIdx] : 0;
+        final uv = uvIdx < u.length ? u[uvIdx] - 128 : 0;
+        final vv = uvIdx < v.length ? v[uvIdx] - 128 : 0;
 
-        // YUV → RGB 변환
-        int r = (yVal + 1.370705 * vVal).round().clamp(0, 255);
-        int g = (yVal - 0.698001 * vVal - 0.337633 * uVal).round().clamp(0, 255);
-        int b = (yVal + 1.732446 * uVal).round().clamp(0, 255);
+        // BT.601 YUV → RGB
+        final r = (yv + 1.370705 * vv).round().clamp(0, 255);
+        final g = (yv - 0.698001 * vv - 0.337633 * uv).round().clamp(0, 255);
+        final b = (yv + 1.732446 * uv).round().clamp(0, 255);
 
-        rgbImage.setPixelRgb(x, y, r, g, b);
+        rgb.setPixelRgb(col, row, r, g, b);
       }
     }
 
-    // 리사이즈 300×300
+    // 320×320으로 리사이즈
     final resized = img.copyResize(
-      rgbImage,
+      rgb,
       width: inputSize,
       height: inputSize,
       interpolation: img.Interpolation.linear,
     );
 
-    // Float32 정규화 [0, 1]
-    final input = List.generate(
+    // Float32 텐서 [1, 320, 320, 3]  — EfficientDet 입력은 0~255 float
+    final tensor = List.generate(
       1,
-      (_) => List.generate(
-        inputSize,
-        (y) => List.generate(
-          inputSize,
-          (x) {
-            final pixel = resized.getPixel(x, y);
-            return [
-              pixel.r / 255.0,
-              pixel.g / 255.0,
-              pixel.b / 255.0,
-            ];
-          },
-        ),
+      (_) => List.generate(inputSize, (row) =>
+        List.generate(inputSize, (col) {
+          final px = resized.getPixel(col, row);
+          return [px.r.toDouble(), px.g.toDouble(), px.b.toDouble()];
+        }),
       ),
     );
 
-    return input;
+    return tensor;
   } catch (e) {
     return null;
   }

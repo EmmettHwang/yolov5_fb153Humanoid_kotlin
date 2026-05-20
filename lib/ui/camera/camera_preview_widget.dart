@@ -444,7 +444,7 @@ class _CameraPreviewWidgetState extends State<CameraPreviewWidget>
               ),
               const SizedBox(height: 4),
               Text(
-                'MobileNet SSD v1 COCO (80 클래스)',
+                'EfficientDet-Lite0 COCO (80 클래스)',
                 style: TextStyle(
                   color: Colors.white.withValues(alpha: 0.5),
                   fontSize: 10,
@@ -579,7 +579,7 @@ class _CameraPreviewWidgetState extends State<CameraPreviewWidget>
           color: _cameraInitialized ? Colors.cyanAccent : Colors.white38,
         ),
         const SizedBox(width: 6),
-        _buildTag('MobileNet SSD', Icons.model_training),
+        _buildTag('EfficientDet-Lite0', Icons.model_training),
         const Spacer(),
         _buildTag(statusLabel, statusIcon, color: statusColor),
       ],
