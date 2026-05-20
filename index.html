@@ -1,0 +1,1341 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>fb153 Robot Android App — 설계 문서</title>
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" />
+  <style>
+    :root {
+      --bg: #0d1117;
+      --surface: #161b22;
+      --surface2: #1c2128;
+      --border: #30363d;
+      --accent: #58a6ff;
+      --accent2: #3fb950;
+      --accent3: #f78166;
+      --accent4: #d2a8ff;
+      --accent5: #ffa657;
+      --text: #e6edf3;
+      --text-muted: #8b949e;
+      --text-dim: #484f58;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Noto Sans KR', sans-serif;
+      font-size: 15px;
+      line-height: 1.7;
+    }
+
+    /* ── 상단 헤더 ── */
+    header {
+      background: linear-gradient(135deg, #161b22 0%, #0d1117 60%, #1a1f2e 100%);
+      border-bottom: 1px solid var(--border);
+      padding: 3rem 2rem 2.5rem;
+      text-align: center;
+      position: relative;
+      overflow: hidden;
+    }
+    header::before {
+      content: '';
+      position: absolute; inset: 0;
+      background: radial-gradient(ellipse at 30% 50%, rgba(88,166,255,.08) 0%, transparent 60%),
+                  radial-gradient(ellipse at 70% 50%, rgba(63,185,80,.06) 0%, transparent 60%);
+    }
+    .header-badge {
+      display: inline-flex; align-items: center; gap: .5rem;
+      background: rgba(88,166,255,.12);
+      border: 1px solid rgba(88,166,255,.3);
+      border-radius: 20px;
+      padding: .3rem 1rem;
+      font-size: .8rem;
+      color: var(--accent);
+      margin-bottom: 1.2rem;
+    }
+    header h1 {
+      font-size: 2.4rem;
+      font-weight: 700;
+      line-height: 1.2;
+      margin-bottom: .8rem;
+    }
+    header h1 span.robot { color: var(--accent); }
+    header h1 span.android { color: var(--accent2); }
+    header p.subtitle {
+      color: var(--text-muted);
+      font-size: 1rem;
+      max-width: 600px;
+      margin: 0 auto 1.5rem;
+    }
+    .header-tags { display: flex; gap: .5rem; justify-content: center; flex-wrap: wrap; }
+    .tag {
+      display: inline-block;
+      padding: .25rem .75rem;
+      border-radius: 6px;
+      font-size: .78rem;
+      font-weight: 600;
+    }
+    .tag-blue   { background: rgba(88,166,255,.15); color: #79c0ff; border: 1px solid rgba(88,166,255,.3); }
+    .tag-green  { background: rgba(63,185,80,.15);  color: #56d364; border: 1px solid rgba(63,185,80,.3); }
+    .tag-orange { background: rgba(255,166,87,.15); color: #ffa657; border: 1px solid rgba(255,166,87,.3); }
+    .tag-purple { background: rgba(210,168,255,.15); color: #d2a8ff; border: 1px solid rgba(210,168,255,.3); }
+    .tag-red    { background: rgba(247,129,102,.15); color: #f78166; border: 1px solid rgba(247,129,102,.3); }
+
+    /* ── 레이아웃 ── */
+    .container { max-width: 1200px; margin: 0 auto; padding: 2rem 1.5rem; }
+
+    /* ── 네비게이션 탭 ── */
+    .nav-tabs {
+      display: flex;
+      gap: .5rem;
+      padding: 1rem 1.5rem;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      overflow-x: auto;
+      position: sticky; top: 0; z-index: 100;
+    }
+    .nav-tab {
+      display: flex; align-items: center; gap: .4rem;
+      padding: .45rem 1rem;
+      border-radius: 6px;
+      border: 1px solid transparent;
+      background: transparent;
+      color: var(--text-muted);
+      font-family: inherit;
+      font-size: .82rem;
+      font-weight: 500;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: all .2s;
+    }
+    .nav-tab:hover  { background: var(--surface2); color: var(--text); }
+    .nav-tab.active { background: var(--surface2); color: var(--accent); border-color: var(--border); }
+
+    /* ── 섹션 카드 ── */
+    .section { display: none; }
+    .section.active { display: block; }
+
+    .section-title {
+      font-size: 1.5rem;
+      font-weight: 700;
+      margin: 2rem 0 1.2rem;
+      display: flex; align-items: center; gap: .6rem;
+    }
+    .section-title .icon { font-size: 1.3rem; }
+
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1.5rem;
+      margin-bottom: 1.2rem;
+    }
+    .card-title {
+      font-size: 1rem;
+      font-weight: 600;
+      color: var(--accent);
+      margin-bottom: 1rem;
+      display: flex; align-items: center; gap: .4rem;
+    }
+
+    /* ── 코드 블록 ── */
+    pre {
+      background: #010409;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1.2rem;
+      overflow-x: auto;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: .82rem;
+      line-height: 1.6;
+      color: #e6edf3;
+      margin: .8rem 0;
+    }
+    code { font-family: 'JetBrains Mono', monospace; font-size: .85em; }
+    .kw  { color: #ff7b72; }
+    .fn  { color: #d2a8ff; }
+    .str { color: #a5d6ff; }
+    .num { color: #79c0ff; }
+    .cmt { color: #8b949e; font-style: italic; }
+    .cls { color: #ffa657; }
+
+    /* ── 테이블 ── */
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: .8rem 0;
+      font-size: .88rem;
+    }
+    th {
+      background: var(--surface2);
+      padding: .7rem 1rem;
+      text-align: left;
+      font-weight: 600;
+      color: var(--text-muted);
+      border-bottom: 1px solid var(--border);
+    }
+    td {
+      padding: .65rem 1rem;
+      border-bottom: 1px solid var(--border);
+      vertical-align: middle;
+    }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: rgba(255,255,255,.02); }
+    .mono { font-family: 'JetBrains Mono', monospace; font-size: .82rem; }
+    .center { text-align: center; }
+
+    /* ── 그리드 카드 ── */
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+    .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; }
+    @media (max-width: 768px) {
+      .grid-2, .grid-3 { grid-template-columns: 1fr; }
+      header h1 { font-size: 1.6rem; }
+    }
+
+    /* ── 패킷 시각화 ── */
+    .packet-visual {
+      display: flex;
+      gap: 3px;
+      flex-wrap: wrap;
+      margin: 1rem 0;
+    }
+    .byte-cell {
+      display: flex; flex-direction: column; align-items: center;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: .4rem .5rem;
+      min-width: 52px;
+    }
+    .byte-cell .b-idx  { font-size: .65rem; color: var(--text-dim); margin-bottom: 2px; }
+    .byte-cell .b-val  { font-family: 'JetBrains Mono', monospace; font-size: .82rem; font-weight: 600; }
+    .byte-cell .b-desc { font-size: .6rem; color: var(--text-muted); margin-top: 2px; text-align: center; }
+    .byte-cell.header-b { border-color: rgba(88,166,255,.4); background: rgba(88,166,255,.08); }
+    .byte-cell.header-b .b-val { color: var(--accent); }
+    .byte-cell.motion-b { border-color: rgba(63,185,80,.4); background: rgba(63,185,80,.08); }
+    .byte-cell.motion-b .b-val { color: var(--accent2); }
+    .byte-cell.chksum-b { border-color: rgba(255,166,87,.4); background: rgba(255,166,87,.08); }
+    .byte-cell.chksum-b .b-val { color: var(--accent5); }
+    .byte-cell.fixed-b  { border-color: var(--border); }
+    .byte-cell.fixed-b .b-val  { color: var(--text-muted); }
+
+    /* ── UI 화면 목업 ── */
+    .phone-mock {
+      background: #000;
+      border: 3px solid #444;
+      border-radius: 32px;
+      width: 280px;
+      height: 560px;
+      margin: 1rem auto;
+      position: relative;
+      overflow: hidden;
+      box-shadow: 0 20px 60px rgba(0,0,0,.5);
+    }
+    .phone-screen {
+      position: absolute; inset: 8px;
+      border-radius: 26px;
+      overflow: hidden;
+      background: #0a0a0a;
+      display: flex; flex-direction: column;
+    }
+    .mock-camera {
+      flex: 0 0 55%;
+      background: linear-gradient(135deg, #1a2a1a 0%, #0d1a0d 100%);
+      position: relative;
+      overflow: hidden;
+    }
+    .mock-camera-label {
+      position: absolute; top: 8px; left: 8px;
+      font-size: .55rem; color: rgba(255,255,255,.5);
+      background: rgba(0,0,0,.4); padding: 2px 6px; border-radius: 4px;
+    }
+    .mock-yolo-box {
+      position: absolute;
+      border: 1.5px solid #00ff88;
+      border-radius: 2px;
+      font-size: .45rem;
+      color: #00ff88;
+    }
+    .mock-yolo-box::before {
+      content: attr(data-label);
+      position: absolute; top: -12px; left: 0;
+      background: rgba(0,255,136,.2);
+      padding: 1px 4px; border-radius: 2px;
+      white-space: nowrap;
+    }
+    .mock-statusbar {
+      flex: 0 0 20px;
+      background: #111;
+      display: flex; align-items: center;
+      padding: 0 8px;
+      font-size: .5rem;
+      color: #3fb950;
+      border-top: 1px solid #333;
+    }
+    .mock-controls {
+      flex: 1;
+      display: flex;
+      background: #0d0d0d;
+    }
+    .mock-joystick-area {
+      flex: 1;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .mock-joystick-outer {
+      width: 80px; height: 80px;
+      border-radius: 50%;
+      border: 2px solid rgba(88,166,255,.3);
+      background: rgba(88,166,255,.05);
+      display: flex; align-items: center; justify-content: center;
+      position: relative;
+    }
+    .mock-joystick-inner {
+      width: 32px; height: 32px;
+      border-radius: 50%;
+      background: radial-gradient(circle at 35% 35%, #5a9fd4, #2255aa);
+      box-shadow: 0 4px 12px rgba(88,166,255,.4);
+    }
+    .mock-buttons-area {
+      flex: 1;
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      grid-template-rows: repeat(3, 1fr);
+      gap: 4px;
+      padding: 8px;
+    }
+    .mock-btn {
+      border-radius: 6px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: .4rem;
+      font-weight: 700;
+      color: #fff;
+      cursor: pointer;
+    }
+
+    /* ── 아키텍처 다이어그램 ── */
+    .arch-box {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1rem;
+      text-align: center;
+      font-size: .82rem;
+      position: relative;
+    }
+    .arch-box .arch-title {
+      font-weight: 600;
+      margin-bottom: .4rem;
+    }
+    .arch-arrow {
+      text-align: center;
+      color: var(--text-dim);
+      font-size: 1.2rem;
+      margin: .3rem 0;
+    }
+
+    /* ── 상태 흐름 ── */
+    .state-flow {
+      display: flex;
+      align-items: center;
+      gap: .5rem;
+      flex-wrap: wrap;
+      margin: 1rem 0;
+    }
+    .state-node {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: .4rem 1rem;
+      font-size: .82rem;
+      font-weight: 600;
+    }
+    .state-node.active-state { border-color: var(--accent2); color: var(--accent2); }
+    .state-arrow { color: var(--text-dim); font-size: .9rem; }
+
+    /* ── 버튼 그리드 목업 ── */
+    .btn-grid-demo {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+      max-width: 400px;
+      margin: 1rem auto;
+    }
+    .btn-demo {
+      aspect-ratio: 1;
+      border-radius: 12px;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      gap: 4px;
+      cursor: pointer;
+      transition: transform .1s, filter .1s;
+      font-size: .78rem;
+      font-weight: 600;
+      color: #fff;
+      border: none;
+      padding: 0;
+      position: relative;
+    }
+    .btn-demo:hover { transform: scale(.95); filter: brightness(1.15); }
+    .btn-demo .btn-num {
+      position: absolute; top: 6px; right: 8px;
+      font-size: .6rem; opacity: .6;
+    }
+    .btn-demo i { font-size: 1.2rem; }
+    .btn-demo span { font-size: .72rem; }
+
+    /* ── 로드맵 ── */
+    .phase-card {
+      border-left: 3px solid var(--border);
+      padding: .8rem 1.2rem;
+      margin-bottom: .8rem;
+      border-radius: 0 8px 8px 0;
+      background: var(--surface2);
+    }
+    .phase-card.phase-1 { border-color: var(--accent); }
+    .phase-card.phase-2 { border-color: var(--accent2); }
+    .phase-card.phase-3 { border-color: var(--accent5); }
+    .phase-card.phase-4 { border-color: var(--accent4); }
+    .phase-card.phase-5 { border-color: var(--accent3); }
+    .phase-title { font-weight: 700; margin-bottom: .5rem; }
+    .phase-item {
+      display: flex; align-items: center; gap: .5rem;
+      font-size: .85rem; color: var(--text-muted);
+      margin: .25rem 0;
+    }
+    .phase-item::before {
+      content: '';
+      width: 16px; height: 16px;
+      border: 2px solid var(--border);
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+
+    /* ── 파일 트리 ── */
+    .file-tree {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: .8rem;
+      line-height: 1.8;
+    }
+    .file-tree .dir  { color: var(--accent);  }
+    .file-tree .file { color: var(--text); }
+    .file-tree .hl   { color: var(--accent2); font-weight: 600; }
+
+    /* ── 권한 배지 ── */
+    .perm-badge {
+      display: inline-flex; align-items: center; gap: .3rem;
+      padding: .25rem .7rem;
+      border-radius: 6px;
+      font-size: .78rem;
+      margin: .2rem .2rem;
+    }
+
+    /* ── 스크롤바 ── */
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+    /* ── 인포 박스 ── */
+    .info-box {
+      display: flex; gap: .8rem;
+      background: rgba(88,166,255,.08);
+      border: 1px solid rgba(88,166,255,.25);
+      border-radius: 8px;
+      padding: 1rem 1.2rem;
+      margin: .8rem 0;
+      font-size: .88rem;
+    }
+    .info-box.warn {
+      background: rgba(255,166,87,.08);
+      border-color: rgba(255,166,87,.25);
+    }
+    .info-box.success {
+      background: rgba(63,185,80,.08);
+      border-color: rgba(63,185,80,.25);
+    }
+    .info-box .icon { font-size: 1.1rem; flex-shrink: 0; margin-top: .1rem; }
+
+    hr.divider {
+      border: none; border-top: 1px solid var(--border);
+      margin: 1.5rem 0;
+    }
+  </style>
+</head>
+<body>
+
+<!-- ── 헤더 ── -->
+<header>
+  <div class="header-badge"><i class="fa-solid fa-robot"></i> Android Native App 설계 문서</div>
+  <h1><span class="robot">fb153</span> Humanoid Robot<br><span class="android">Android</span> Control App</h1>
+  <p class="subtitle">PC Python + YOLOv5 → Android Bluetooth Classic 네이티브 앱 전환 설계서</p>
+  <div class="header-tags">
+    <span class="tag tag-blue"><i class="fa-brands fa-android"></i> Kotlin</span>
+    <span class="tag tag-blue"><i class="fa-solid fa-bluetooth"></i> BT Classic 2.0</span>
+    <span class="tag tag-green"><i class="fa-solid fa-gamepad"></i> Joystick</span>
+    <span class="tag tag-green"><i class="fa-solid fa-hand-pointer"></i> 동작버튼 ×9</span>
+    <span class="tag tag-orange"><i class="fa-solid fa-music"></i> MP3 연동</span>
+    <span class="tag tag-purple"><i class="fa-solid fa-camera"></i> YOLOv5 TFLite</span>
+    <span class="tag tag-red"><i class="fa-solid fa-eye"></i> 실시간 인식</span>
+  </div>
+</header>
+
+<!-- ── 네비게이션 ── -->
+<nav class="nav-tabs" id="navTabs">
+  <button class="nav-tab active" data-tab="overview"><i class="fa-solid fa-diagram-project"></i> 시스템 개요</button>
+  <button class="nav-tab" data-tab="protocol"><i class="fa-solid fa-network-wired"></i> 통신 프로토콜</button>
+  <button class="nav-tab" data-tab="ui"><i class="fa-solid fa-mobile-screen"></i> UI 설계</button>
+  <button class="nav-tab" data-tab="joystick"><i class="fa-solid fa-gamepad"></i> 조이스틱</button>
+  <button class="nav-tab" data-tab="buttons"><i class="fa-solid fa-hand-pointer"></i> 동작버튼 ×9</button>
+  <button class="nav-tab" data-tab="mp3"><i class="fa-solid fa-music"></i> MP3 연동</button>
+  <button class="nav-tab" data-tab="yolo"><i class="fa-solid fa-camera"></i> 카메라+YOLO</button>
+  <button class="nav-tab" data-tab="code"><i class="fa-solid fa-code"></i> 코드 구조</button>
+  <button class="nav-tab" data-tab="roadmap"><i class="fa-solid fa-road"></i> 로드맵</button>
+</nav>
+
+<div class="container">
+
+  <!-- ══════════════════════════════════════════════════════
+       TAB 1: 시스템 개요
+  ══════════════════════════════════════════════════════ -->
+  <section class="section active" id="tab-overview">
+    <h2 class="section-title"><span class="icon">📐</span> 시스템 개요</h2>
+
+    <div class="grid-2">
+      <div class="card">
+        <div class="card-title"><i class="fa-solid fa-desktop"></i> 기존 시스템 (PC Python)</div>
+        <div class="arch-box" style="border-color:rgba(247,129,102,.3)">
+          <div class="arch-title" style="color:#f78166">🖥️ PC</div>
+          <div style="font-size:.82rem;color:var(--text-muted)">main.py · robot_controller.py</div>
+        </div>
+        <div class="arch-arrow">⬇ COM 포트 (pyserial)</div>
+        <div class="arch-box" style="border-color:rgba(88,166,255,.3)">
+          <div class="arch-title" style="color:var(--accent)">📡 Bluetooth 2.0 Classic</div>
+          <div style="font-size:.82rem;color:var(--text-muted)">SPP · 115,200 bps</div>
+        </div>
+        <div class="arch-arrow">⬇</div>
+        <div class="arch-box" style="border-color:rgba(63,185,80,.3)">
+          <div class="arch-title" style="color:var(--accent2)">🤖 fb153 로봇</div>
+          <div style="font-size:.82rem;color:var(--text-muted)">15-byte 패킷 수신</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title"><i class="fa-brands fa-android"></i> 목표 시스템 (Android 앱)</div>
+        <div class="arch-box" style="border-color:rgba(63,185,80,.3)">
+          <div class="arch-title" style="color:var(--accent2)">📱 Android 스마트폰</div>
+          <div style="font-size:.82rem;color:var(--text-muted)">Kotlin · MVVM · CameraX · TFLite</div>
+        </div>
+        <div class="arch-arrow">⬇ Bluetooth Classic (RFCOMM/SPP)</div>
+        <div class="arch-box" style="border-color:rgba(88,166,255,.3)">
+          <div class="arch-title" style="color:var(--accent)">📡 Bluetooth 2.0 Classic</div>
+          <div style="font-size:.82rem;color:var(--text-muted)">SPP · 115,200 bps · UUID: 00001101...</div>
+        </div>
+        <div class="arch-arrow">⬇</div>
+        <div class="arch-box" style="border-color:rgba(63,185,80,.3)">
+          <div class="arch-title" style="color:var(--accent2)">🤖 fb153 로봇</div>
+          <div style="font-size:.82rem;color:var(--text-muted)">동일 15-byte 패킷 수신</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title"><i class="fa-solid fa-list-check"></i> 핵심 기능 구성요소</div>
+      <div class="grid-3">
+        <div style="background:var(--surface2);border-radius:10px;padding:1rem;border:1px solid rgba(88,166,255,.2)">
+          <div style="font-size:1.5rem;margin-bottom:.5rem">🕹️</div>
+          <div style="font-weight:600;margin-bottom:.3rem">조이스틱</div>
+          <div style="font-size:.82rem;color:var(--text-muted)">터치 기반 방향/속도 제어<br>8방향 + 데드존</div>
+        </div>
+        <div style="background:var(--surface2);border-radius:10px;padding:1rem;border:1px solid rgba(63,185,80,.2)">
+          <div style="font-size:1.5rem;margin-bottom:.5rem">🎮</div>
+          <div style="font-weight:600;margin-bottom:.3rem">동작버튼 ×9</div>
+          <div style="font-size:.82rem;color:var(--text-muted)">3×3 그리드<br>명령어 셋 + MP3 연동</div>
+        </div>
+        <div style="background:var(--surface2);border-radius:10px;padding:1rem;border:1px solid rgba(255,166,87,.2)">
+          <div style="font-size:1.5rem;margin-bottom:.5rem">🎵</div>
+          <div style="font-weight:600;margin-bottom:.3rem">MP3 재생</div>
+          <div style="font-size:.82rem;color:var(--text-muted)">버튼 동작 시 사운드<br>로컬파일 / URL 지원</div>
+        </div>
+        <div style="background:var(--surface2);border-radius:10px;padding:1rem;border:1px solid rgba(210,168,255,.2)">
+          <div style="font-size:1.5rem;margin-bottom:.5rem">📷</div>
+          <div style="font-weight:600;margin-bottom:.3rem">카메라 프리뷰</div>
+          <div style="font-size:.82rem;color:var(--text-muted)">CameraX 기반<br>실시간 영상 스트림</div>
+        </div>
+        <div style="background:var(--surface2);border-radius:10px;padding:1rem;border:1px solid rgba(247,129,102,.2)">
+          <div style="font-size:1.5rem;margin-bottom:.5rem">🎯</div>
+          <div style="font-weight:600;margin-bottom:.3rem">YOLOv5 추론</div>
+          <div style="font-size:.82rem;color:var(--text-muted)">TFLite On-device<br>60% 신뢰도 기준</div>
+        </div>
+        <div style="background:var(--surface2);border-radius:10px;padding:1rem;border:1px solid rgba(88,166,255,.2)">
+          <div style="font-size:1.5rem;margin-bottom:.5rem">🔵</div>
+          <div style="font-weight:600;margin-bottom:.3rem">BT Classic</div>
+          <div style="font-size:.82rem;color:var(--text-muted)">fb153 자동 필터<br>SPP RFCOMM</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title"><i class="fa-solid fa-code-compare"></i> 기존 Python → Android Kotlin 변환 매핑</div>
+      <table>
+        <thead><tr><th>기존 Python 모듈</th><th>Android Kotlin 클래스</th><th>역할</th></tr></thead>
+        <tbody>
+          <tr><td class="mono">robot_controller.py → HumanoidRobot</td><td class="mono" style="color:var(--accent2)">BluetoothManager + PacketBuilder</td><td>BT 연결 및 패킷 전송</td></tr>
+          <tr><td class="mono">robot_controller.py → MotionSequencer</td><td class="mono" style="color:var(--accent2)">DetectionMotionHandler</td><td>상태머신(IDLE/ACTION/RETURN)</td></tr>
+          <tr><td class="mono">main.py → YOLOv5 (torch)</td><td class="mono" style="color:var(--accent2)">YOLOv5Detector (TFLite)</td><td>객체 탐지 추론</td></tr>
+          <tr><td class="mono">main.py → cv2.VideoCapture</td><td class="mono" style="color:var(--accent2)">CameraX ImageAnalysis</td><td>카메라 프레임 수집</td></tr>
+          <tr><td class="mono">main.py → LABEL_TO_MOTION</td><td class="mono" style="color:var(--accent2)">DetectionMappingEntity (DB)</td><td>라벨→모션 매핑</td></tr>
+          <tr><td class="mono">port_selector.py</td><td class="mono" style="color:var(--accent2)">BluetoothScanFragment</td><td>기기 검색 및 선택 UI</td></tr>
+          <tr><td class="mono">(신규)</td><td class="mono" style="color:var(--accent5)">JoystickView</td><td>터치 방향 제어 (신규)</td></tr>
+          <tr><td class="mono">(신규)</td><td class="mono" style="color:var(--accent5)">ActionButtonPanel</td><td>동작버튼 9개 (신규)</td></tr>
+          <tr><td class="mono">(신규)</td><td class="mono" style="color:var(--accent5)">AudioPlayer</td><td>MP3 재생 (신규)</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ══════════════════════════════════════════════════════
+       TAB 2: 통신 프로토콜
+  ══════════════════════════════════════════════════════ -->
+  <section class="section" id="tab-protocol">
+    <h2 class="section-title"><span class="icon">📡</span> Bluetooth 통신 프로토콜</h2>
+
+    <div class="card">
+      <div class="card-title"><i class="fa-solid fa-table-cells"></i> 15-byte 패킷 구조</div>
+      <p style="font-size:.85rem;color:var(--text-muted);margin-bottom:1rem">원본 Python <code>robot_controller.py</code>의 <code>build_packet()</code> 함수 분석 결과</p>
+      <div class="packet-visual">
+        <div class="byte-cell header-b"><div class="b-idx">[0]</div><div class="b-val">FF</div><div class="b-desc">Header1</div></div>
+        <div class="byte-cell header-b"><div class="b-idx">[1]</div><div class="b-val">FF</div><div class="b-desc">Header2</div></div>
+        <div class="byte-cell header-b"><div class="b-idx">[2]</div><div class="b-val">4C</div><div class="b-desc">'L'</div></div>
+        <div class="byte-cell header-b"><div class="b-idx">[3]</div><div class="b-val">53</div><div class="b-desc">'S'</div></div>
+        <div class="byte-cell fixed-b"><div class="b-idx">[4]</div><div class="b-val">00</div><div class="b-desc">예약</div></div>
+        <div class="byte-cell fixed-b"><div class="b-idx">[5]</div><div class="b-val">00</div><div class="b-desc">예약</div></div>
+        <div class="byte-cell fixed-b"><div class="b-idx">[6]</div><div class="b-val">00</div><div class="b-desc">체크섬↓</div></div>
+        <div class="byte-cell fixed-b"><div class="b-idx">[7]</div><div class="b-val">00</div><div class="b-desc"></div></div>
+        <div class="byte-cell fixed-b"><div class="b-idx">[8]</div><div class="b-val">30</div><div class="b-desc"></div></div>
+        <div class="byte-cell fixed-b"><div class="b-idx">[9]</div><div class="b-val">0C</div><div class="b-desc"></div></div>
+        <div class="byte-cell fixed-b"><div class="b-idx">[10]</div><div class="b-val">03</div><div class="b-desc"></div></div>
+        <div class="byte-cell motion-b"><div class="b-idx">[11]</div><div class="b-val">NN</div><div class="b-desc">모션번호</div></div>
+        <div class="byte-cell fixed-b"><div class="b-idx">[12]</div><div class="b-val">00</div><div class="b-desc"></div></div>
+        <div class="byte-cell fixed-b"><div class="b-idx">[13]</div><div class="b-val">64</div><div class="b-desc">속도100</div></div>
+        <div class="byte-cell chksum-b"><div class="b-idx">[14]</div><div class="b-val">CS</div><div class="b-desc">체크섬</div></div>
+      </div>
+      <div class="info-box">
+        <span class="icon">ℹ️</span>
+        <div><strong>체크섬 계산:</strong> byte[6] ~ byte[13] 의 합산값 <code>&amp; 0xFF</code> → byte[14]에 저장</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title"><i class="fa-solid fa-list"></i> 알려진 모션 번호 및 패킷 예시</div>
+      <table>
+        <thead><tr><th>모션 번호</th><th>동작</th><th>15-byte 패킷 (Hex)</th></tr></thead>
+        <tbody>
+          <tr><td class="center mono" style="color:var(--accent2)">1</td><td>기본자세 (복귀)</td><td class="mono" style="font-size:.76rem">FF FF 4C 53 00 00 00 00 30 0C 03 <span style="color:var(--accent2)">01</span> 00 64 <span style="color:var(--accent5)">A4</span></td></tr>
+          <tr><td class="center mono" style="color:var(--accent2)">18</td><td>손흔들기</td><td class="mono" style="font-size:.76rem">FF FF 4C 53 00 00 00 00 30 0C 03 <span style="color:var(--accent2)">12</span> 00 64 <span style="color:var(--accent5)">B5</span></td></tr>
+          <tr><td class="center mono" style="color:var(--accent2)">19</td><td>인사</td><td class="mono" style="font-size:.76rem">FF FF 4C 53 00 00 00 00 30 0C 03 <span style="color:var(--accent2)">13</span> 00 64 <span style="color:var(--accent5)">B6</span></td></tr>
+          <tr><td class="center mono" style="color:var(--accent2)">20</td><td>사용자정의</td><td class="mono" style="font-size:.76rem">FF FF 4C 53 00 00 00 00 30 0C 03 <span style="color:var(--accent2)">14</span> 00 64 <span style="color:var(--accent5)">B7</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="card">
+      <div class="card-title"><i class="fa-brands fa-android"></i> Android PacketBuilder (Kotlin)</div>
+<pre><span class="kw">object</span> <span class="cls">PacketBuilder</span> {
+    <span class="kw">const val</span> PACKET_SIZE = <span class="num">15</span>
+
+    <span class="kw">fun</span> <span class="fn">build</span>(motionIndex: <span class="cls">Int</span>): <span class="cls">ByteArray</span> {
+        require(motionIndex <span class="kw">in</span> <span class="num">0</span>..<span class="num">255</span>) { <span class="str">"모션 인덱스 범위 오류"</span> }
+
+        <span class="kw">val</span> pkt = <span class="cls">ByteArray</span>(<span class="num">15</span>)
+        pkt[<span class="num">0</span>] = <span class="num">0xFF</span>.toByte(); pkt[<span class="num">1</span>] = <span class="num">0xFF</span>.toByte()
+        pkt[<span class="num">2</span>] = <span class="num">0x4C</span>;          pkt[<span class="num">3</span>] = <span class="num">0x53</span>
+        pkt[<span class="num">8</span>] = <span class="num">0x30</span>;          pkt[<span class="num">9</span>] = <span class="num">0x0C</span>
+        pkt[<span class="num">10</span>] = <span class="num">0x03</span>;         pkt[<span class="num">11</span>] = motionIndex.toByte()
+        pkt[<span class="num">13</span>] = <span class="num">100</span>.toByte()   <span class="cmt">// 속도</span>
+
+        <span class="cmt">// 체크섬: byte[6]~[13] 합산 & 0xFF</span>
+        <span class="kw">var</span> chk = <span class="num">0</span>
+        <span class="kw">for</span> (i <span class="kw">in</span> <span class="num">6</span>..<span class="num">13</span>) chk = (chk + pkt[i].toInt() <span class="kw">and</span> <span class="num">0xFF</span>) <span class="kw">and</span> <span class="num">0xFF</span>
+        pkt[<span class="num">14</span>] = chk.toByte()
+        <span class="kw">return</span> pkt
+    }
+}</pre>
+    </div>
+
+    <div class="card">
+      <div class="card-title"><i class="fa-solid fa-arrows-spin"></i> 연결 흐름 및 상태 머신</div>
+      <div class="state-flow">
+        <div class="state-node">DISCONNECTED</div>
+        <div class="state-arrow">→ 스캔 →</div>
+        <div class="state-node">SCANNING</div>
+        <div class="state-arrow">→ fb153 선택 →</div>
+        <div class="state-node">CONNECTING</div>
+        <div class="state-arrow">→ 성공 →</div>
+        <div class="state-node active-state">CONNECTED ✓</div>
+      </div>
+      <div style="margin-top:1rem">
+        <div class="info-box warn">
+          <span class="icon">⚠️</span>
+          <div><strong>RFCOMM UUID:</strong> <code>00001101-0000-1000-8000-00805F9B34FB</code> (SPP 표준)</div>
+        </div>
+        <div class="info-box">
+          <span class="icon">🔍</span>
+          <div><strong>기기 필터:</strong> <code>device.name.startsWith("fb153")</code> 로 자동 필터링</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══════════════════════════════════════════════════════
+       TAB 3: UI 설계
+  ══════════════════════════════════════════════════════ -->
+  <section class="section" id="tab-ui">
+    <h2 class="section-title"><span class="icon">📱</span> UI 화면 설계</h2>
+
+    <div class="grid-2">
+      <div class="card">
+        <div class="card-title"><i class="fa-solid fa-mobile-screen"></i> 메인 화면 목업</div>
+        <div class="phone-mock">
+          <div class="phone-screen">
+            <div class="mock-camera">
+              <div class="mock-camera-label">📷 CameraX Preview + YOLO Overlay</div>
+              <div class="mock-yolo-box" data-label="person 94%" style="top:30%;left:20%;width:35%;height:40%;"></div>
+              <div class="mock-yolo-box" data-label="bottle 72%" style="top:20%;left:60%;width:25%;height:30%;border-color:#ffaa00;color:#ffaa00;"></div>
+            </div>
+            <div class="mock-statusbar">● 연결됨: fb153_Robot &nbsp; 🔋 82% &nbsp; ⏱ 12ms</div>
+            <div class="mock-controls">
+              <div class="mock-joystick-area">
+                <div class="mock-joystick-outer">
+                  <div class="mock-joystick-inner"></div>
+                </div>
+              </div>
+              <div class="mock-buttons-area">
+                <div class="mock-btn" style="background:#6e40c9">인사</div>
+                <div class="mock-btn" style="background:#2ea043">흔들기</div>
+                <div class="mock-btn" style="background:#d29922">커스텀1</div>
+                <div class="mock-btn" style="background:#b94f45">커스텀2</div>
+                <div class="mock-btn" style="background:#1f6feb">커스텀3</div>
+                <div class="mock-btn" style="background:#6e40c9">커스텀4</div>
+                <div class="mock-btn" style="background:#2ea043">커스텀5</div>
+                <div class="mock-btn" style="background:#d29922">커스텀6</div>
+                <div class="mock-btn" style="background:#6e7681">복귀</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title"><i class="fa-solid fa-ruler-combined"></i> 화면 비율 설계</div>
+        <div style="margin:1rem 0">
+          <div style="display:flex;flex-direction:column;gap:4px;height:300px;border:1px solid var(--border);border-radius:8px;overflow:hidden">
+            <div style="flex:0 0 55%;background:linear-gradient(135deg,rgba(63,185,80,.1),rgba(88,166,255,.1));display:flex;align-items:center;justify-content:center;border-bottom:1px solid var(--border)">
+              <div style="text-align:center">
+                <div style="font-size:1.5rem">📷</div>
+                <div style="font-weight:600">카메라 + YOLO</div>
+                <div style="font-size:.8rem;color:var(--text-muted)">55% 높이</div>
+              </div>
+            </div>
+            <div style="flex:0 0 5%;background:rgba(88,166,255,.05);display:flex;align-items:center;justify-content:center;border-bottom:1px solid var(--border)">
+              <div style="font-size:.7rem;color:var(--text-muted)">📊 상태바 5%</div>
+            </div>
+            <div style="flex:1;display:flex">
+              <div style="flex:1;background:rgba(88,166,255,.08);display:flex;align-items:center;justify-content:center;border-right:1px solid var(--border)">
+                <div style="text-align:center">
+                  <div style="font-size:1.2rem">🕹️</div>
+                  <div style="font-size:.75rem;font-weight:600">조이스틱</div>
+                  <div style="font-size:.65rem;color:var(--text-muted)">좌측 40%</div>
+                </div>
+              </div>
+              <div style="flex:1;background:rgba(63,185,80,.08);display:flex;align-items:center;justify-content:center">
+                <div style="text-align:center">
+                  <div style="font-size:1.2rem">🎮</div>
+                  <div style="font-size:.75rem;font-weight:600">버튼 ×9</div>
+                  <div style="font-size:.65rem;color:var(--text-muted)">우측 40%</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <table>
+          <thead><tr><th>영역</th><th>높이 비율</th><th>설명</th></tr></thead>
+          <tbody>
+            <tr><td>카메라 + YOLO</td><td class="center">55%</td><td>CameraX + 탐지 오버레이</td></tr>
+            <tr><td>상태바</td><td class="center">5%</td><td>BT 상태, 배터리, 지연</td></tr>
+            <tr><td>조이스틱</td><td class="center">40%</td><td>하단 좌측 절반</td></tr>
+            <tr><td>액션버튼 3×3</td><td class="center">40%</td><td>하단 우측 절반</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title"><i class="fa-solid fa-circle-info"></i> 상태바 표시 항목</div>
+      <div style="background:var(--surface2);border-radius:8px;padding:1rem;font-family:'JetBrains Mono',monospace;font-size:.85rem">
+        <span style="color:var(--accent2)">● 연결됨: fb153_Robot</span>
+        &nbsp;&nbsp;
+        <span style="color:var(--accent5)">🔋 배터리: 82%</span>
+        &nbsp;&nbsp;
+        <span style="color:var(--accent)">⏱ 지연: 12ms</span>
+        &nbsp;&nbsp;
+        <span style="color:var(--accent4)">🎯 인식: person 94%</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══════════════════════════════════════════════════════
+       TAB 4: 조이스틱
+  ══════════════════════════════════════════════════════ -->
+  <section class="section" id="tab-joystick">
+    <h2 class="section-title"><span class="icon">🕹️</span> 조이스틱 모듈 설계</h2>
+
+    <div class="grid-2">
+      <div class="card">
+        <div class="card-title"><i class="fa-solid fa-compass"></i> 8방향 판정 로직</div>
+        <div style="position:relative;width:200px;height:200px;margin:1rem auto;border:2px solid rgba(88,166,255,.3);border-radius:50%;background:rgba(88,166,255,.04)">
+          <!-- 방향 표시 -->
+          <div style="position:absolute;top:8px;left:50%;transform:translateX(-50%);font-size:.72rem;color:var(--accent);font-weight:700">↑ FORWARD</div>
+          <div style="position:absolute;bottom:8px;left:50%;transform:translateX(-50%);font-size:.72rem;color:var(--accent);font-weight:700">↓ BACKWARD</div>
+          <div style="position:absolute;left:4px;top:50%;transform:translateY(-50%);font-size:.68rem;color:var(--accent);font-weight:700">← LEFT</div>
+          <div style="position:absolute;right:0px;top:50%;transform:translateY(-50%);font-size:.68rem;color:var(--accent);font-weight:700">RIGHT →</div>
+          <!-- 대각선 -->
+          <div style="position:absolute;top:18%;left:18%;font-size:.6rem;color:var(--accent4)">↖ FW_L</div>
+          <div style="position:absolute;top:18%;right:14%;font-size:.6rem;color:var(--accent4)">FW_R ↗</div>
+          <div style="position:absolute;bottom:18%;left:14%;font-size:.6rem;color:var(--accent4)">↙ BW_L</div>
+          <div style="position:absolute;bottom:18%;right:10%;font-size:.6rem;color:var(--accent4)">BW_R ↘</div>
+          <!-- 중심 원 -->
+          <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:60px;height:60px;border-radius:50%;background:radial-gradient(circle at 35% 35%,#5a9fd4,#2255aa);box-shadow:0 4px 12px rgba(88,166,255,.4)"></div>
+          <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:90px;height:90px;border-radius:50%;border:1px dashed rgba(255,255,255,.15)"></div>
+          <!-- 데드존 표시 -->
+          <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:30px;height:30px;border-radius:50%;border:1px solid rgba(255,87,87,.4)"></div>
+        </div>
+        <div class="info-box warn" style="margin-top:.5rem">
+          <span class="icon">⚙️</span>
+          <div><strong>데드존:</strong> 중심에서 15% 이내 → STOP 처리 (오작동 방지)</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title"><i class="fa-solid fa-table"></i> 방향 → 모션 매핑 테이블</div>
+        <table>
+          <thead><tr><th>방향</th><th>기본 모션</th><th>전송 주기</th></tr></thead>
+          <tbody>
+            <tr><td>STOP</td><td class="center mono">1</td><td class="center">즉시 1회</td></tr>
+            <tr><td>↑ FORWARD</td><td class="center mono">2</td><td class="center">50ms 반복</td></tr>
+            <tr><td>↓ BACKWARD</td><td class="center mono">3</td><td class="center">50ms 반복</td></tr>
+            <tr><td>← LEFT</td><td class="center mono">4</td><td class="center">50ms 반복</td></tr>
+            <tr><td>→ RIGHT</td><td class="center mono">5</td><td class="center">50ms 반복</td></tr>
+            <tr><td>↖ FORWARD_LEFT</td><td class="center mono">6</td><td class="center">50ms 반복</td></tr>
+            <tr><td>↗ FORWARD_RIGHT</td><td class="center mono">7</td><td class="center">50ms 반복</td></tr>
+            <tr><td>↙ BACKWARD_LEFT</td><td class="center mono">8</td><td class="center">50ms 반복</td></tr>
+            <tr><td>↘ BACKWARD_RIGHT</td><td class="center mono">9</td><td class="center">50ms 반복</td></tr>
+          </tbody>
+        </table>
+        <div class="info-box" style="margin-top:.8rem">
+          <span class="icon">💡</span>
+          <div>모션 번호는 설정 화면에서 변경 가능합니다 (실제 로봇 하드웨어에 맞게 조정)</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title"><i class="fa-solid fa-code"></i> JoystickView 핵심 구현 (Kotlin)</div>
+<pre><span class="kw">class</span> <span class="cls">JoystickView</span>(context: <span class="cls">Context</span>) : <span class="cls">View</span>(context) {
+
+    <span class="kw">var</span> onJoystickMove: ((<span class="cls">JoystickOutput</span>) -> <span class="cls">Unit</span>)? = <span class="kw">null</span>
+
+    <span class="kw">override fun</span> <span class="fn">onTouchEvent</span>(event: <span class="cls">MotionEvent</span>): <span class="cls">Boolean</span> {
+        <span class="kw">when</span> (event.action) {
+            MotionEvent.ACTION_DOWN,
+            MotionEvent.ACTION_MOVE -> <span class="fn">updateStick</span>(event.x, event.y)
+            MotionEvent.ACTION_UP   -> <span class="fn">resetToCenter</span>()  <span class="cmt">// 손 떼면 정지</span>
+        }
+        <span class="kw">return true</span>
+    }
+
+    <span class="kw">private fun</span> <span class="fn">calcDirection</span>(dx: <span class="cls">Float</span>, dy: <span class="cls">Float</span>, power: <span class="cls">Float</span>): <span class="cls">Direction</span> {
+        <span class="kw">if</span> (power < <span class="num">0.15f</span>) <span class="kw">return</span> Direction.STOP  <span class="cmt">// 데드존</span>
+        <span class="kw">val</span> angle = Math.toDegrees(atan2(dy.toDouble(), dx.toDouble()))
+        <span class="kw">return when</span> {
+            angle <span class="kw">in</span> -<span class="num">67.5</span>..-<span class="num">22.5</span>  -> Direction.FORWARD_RIGHT
+            angle <span class="kw">in</span> -<span class="num">112.5</span>..-<span class="num">67.5</span> -> Direction.FORWARD
+            angle <span class="kw">in</span> -<span class="num">157.5</span>..-<span class="num">112.5</span>-> Direction.FORWARD_LEFT
+            angle >= <span class="num">157.5</span> || angle <= -<span class="num">157.5</span> -> Direction.LEFT
+            angle <span class="kw">in</span> <span class="num">112.5</span>..<span class="num">157.5</span> -> Direction.BACKWARD_LEFT
+            angle <span class="kw">in</span> <span class="num">67.5</span>..<span class="num">112.5</span>  -> Direction.BACKWARD
+            angle <span class="kw">in</span> <span class="num">22.5</span>..<span class="num">67.5</span>   -> Direction.BACKWARD_RIGHT
+            <span class="kw">else</span>                   -> Direction.RIGHT
+        }
+    }
+}</pre>
+    </div>
+  </section>
+
+  <!-- ══════════════════════════════════════════════════════
+       TAB 5: 동작버튼
+  ══════════════════════════════════════════════════════ -->
+  <section class="section" id="tab-buttons">
+    <h2 class="section-title"><span class="icon">🎮</span> 동작 버튼 9개 설계</h2>
+
+    <div class="card">
+      <div class="card-title"><i class="fa-solid fa-grid-2"></i> 버튼 배치 (3×3 그리드) 데모</div>
+      <p style="font-size:.85rem;color:var(--text-muted);margin-bottom:1rem">길게 누르면 명령어 셋 편집 다이얼로그가 열립니다</p>
+      <div class="btn-grid-demo">
+        <button class="btn-demo" style="background:linear-gradient(135deg,#6e40c9,#4d2d9a)">
+          <div class="btn-num">1</div><i class="fa-solid fa-hand-wave"></i><span>인사</span>
+        </button>
+        <button class="btn-demo" style="background:linear-gradient(135deg,#2ea043,#1f7030)">
+          <div class="btn-num">2</div><i class="fa-solid fa-hands-clapping"></i><span>손흔들기</span>
+        </button>
+        <button class="btn-demo" style="background:linear-gradient(135deg,#d29922,#9a6f17)">
+          <div class="btn-num">3</div><i class="fa-solid fa-star"></i><span>커스텀1</span>
+        </button>
+        <button class="btn-demo" style="background:linear-gradient(135deg,#b94f45,#8a3830)">
+          <div class="btn-num">4</div><i class="fa-solid fa-music"></i><span>댄스</span>
+        </button>
+        <button class="btn-demo" style="background:linear-gradient(135deg,#1f6feb,#1554b5)">
+          <div class="btn-num">5</div><i class="fa-solid fa-bolt"></i><span>커스텀3</span>
+        </button>
+        <button class="btn-demo" style="background:linear-gradient(135deg,#6e40c9,#4d2d9a)">
+          <div class="btn-num">6</div><i class="fa-solid fa-robot"></i><span>커스텀4</span>
+        </button>
+        <button class="btn-demo" style="background:linear-gradient(135deg,#2ea043,#1f7030)">
+          <div class="btn-num">7</div><i class="fa-solid fa-heart"></i><span>커스텀5</span>
+        </button>
+        <button class="btn-demo" style="background:linear-gradient(135deg,#d29922,#9a6f17)">
+          <div class="btn-num">8</div><i class="fa-solid fa-fire"></i><span>커스텀6</span>
+        </button>
+        <button class="btn-demo" style="background:linear-gradient(135deg,#484f58,#2d3138)">
+          <div class="btn-num">9</div><i class="fa-solid fa-rotate-left"></i><span>복귀</span>
+        </button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title"><i class="fa-solid fa-table"></i> 버튼 기본 설정</div>
+      <table>
+        <thead><tr><th>버튼</th><th>기본 이름</th><th>기본 모션</th><th>기본 MP3</th><th>편집</th></tr></thead>
+        <tbody>
+          <tr><td class="center">1</td><td>인사</td><td class="center mono">19</td><td class="mono">hello.mp3</td><td class="center">✅</td></tr>
+          <tr><td class="center">2</td><td>손흔들기</td><td class="center mono">18</td><td class="mono">wave.mp3</td><td class="center">✅</td></tr>
+          <tr><td class="center">3</td><td>사용자정의1</td><td class="center mono">20</td><td class="mono">custom1.mp3</td><td class="center">✅</td></tr>
+          <tr><td class="center">4</td><td>사용자정의2</td><td class="center mono">21</td><td class="mono">custom2.mp3</td><td class="center">✅</td></tr>
+          <tr><td class="center">5</td><td>사용자정의3</td><td class="center mono">22</td><td class="mono">custom3.mp3</td><td class="center">✅</td></tr>
+          <tr><td class="center">6</td><td>사용자정의4</td><td class="center mono">23</td><td class="mono">custom4.mp3</td><td class="center">✅</td></tr>
+          <tr><td class="center">7</td><td>사용자정의5</td><td class="center mono">24</td><td class="mono">custom5.mp3</td><td class="center">✅</td></tr>
+          <tr><td class="center">8</td><td>사용자정의6</td><td class="center mono">25</td><td class="mono">custom6.mp3</td><td class="center">✅</td></tr>
+          <tr><td class="center">9</td><td>복귀(기본자세)</td><td class="center mono">1</td><td class="mono">return.mp3</td><td class="center">✅</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="card">
+      <div class="card-title"><i class="fa-solid fa-list-ol"></i> 명령어 시퀀스 (연속 모션)</div>
+      <p style="font-size:.85rem;color:var(--text-muted);margin-bottom:1rem">각 버튼은 단일 모션 또는 여러 모션을 순서대로 실행하는 시퀀스를 가질 수 있습니다.</p>
+      <div class="grid-2">
+        <div>
+          <div style="font-weight:600;margin-bottom:.5rem;color:var(--accent2)">단순 모션 (1단계)</div>
+<pre style="font-size:.78rem">{
+  <span class="str">"buttonId"</span>: <span class="num">1</span>,
+  <span class="str">"name"</span>: <span class="str">"인사"</span>,
+  <span class="str">"commands"</span>: [
+    {
+      <span class="str">"motionIndex"</span>: <span class="num">19</span>,
+      <span class="str">"holdDurationMs"</span>: <span class="num">3000</span>,
+      <span class="str">"repeatCount"</span>: <span class="num">1</span>
+    }
+  ]
+}</pre>
+        </div>
+        <div>
+          <div style="font-weight:600;margin-bottom:.5rem;color:var(--accent5)">연속 시퀀스 (다단계)</div>
+<pre style="font-size:.78rem">{
+  <span class="str">"buttonId"</span>: <span class="num">4</span>,
+  <span class="str">"name"</span>: <span class="str">"댄스"</span>,
+  <span class="str">"commands"</span>: [
+    { <span class="str">"motionIndex"</span>: <span class="num">15</span>, <span class="str">"holdMs"</span>: <span class="num">1000</span> },
+    { <span class="str">"motionIndex"</span>: <span class="num">16</span>, <span class="str">"holdMs"</span>: <span class="num">1000</span>,
+      <span class="str">"repeatCount"</span>: <span class="num">2</span> },
+    { <span class="str">"motionIndex"</span>: <span class="num">17</span>, <span class="str">"holdMs"</span>: <span class="num">1500</span> },
+    { <span class="str">"motionIndex"</span>: <span class="num">1</span>,  <span class="str">"holdMs"</span>: <span class="num">500</span>  }
+  ]
+}</pre>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══════════════════════════════════════════════════════
+       TAB 6: MP3 연동
+  ══════════════════════════════════════════════════════ -->
+  <section class="section" id="tab-mp3">
+    <h2 class="section-title"><span class="icon">🎵</span> MP3 연동 설계</h2>
+
+    <div class="card">
+      <div class="card-title"><i class="fa-solid fa-diagram-project"></i> MP3 재생 흐름</div>
+      <div class="state-flow">
+        <div class="state-node" style="background:rgba(63,185,80,.1);border-color:rgba(63,185,80,.3);color:var(--accent2)">버튼 탭</div>
+        <div class="state-arrow">→</div>
+        <div class="state-node">파일 경로 확인</div>
+        <div class="state-arrow">→</div>
+        <div class="state-node">AudioPlayer.play()</div>
+        <div class="state-arrow">+</div>
+        <div class="state-node" style="border-color:rgba(88,166,255,.3);color:var(--accent)">BT 패킷 전송</div>
+      </div>
+      <div class="grid-2" style="margin-top:1rem">
+        <div class="info-box success">
+          <span class="icon">📂</span>
+          <div><strong>로컬 파일 (1순위)</strong><br>내부 저장소 또는 외부 SD의 MP3 파일 직접 재생</div>
+        </div>
+        <div class="info-box">
+          <span class="icon">🌐</span>
+          <div><strong>URL 스트리밍 (2순위)</strong><br>http/https URL의 MP3 스트리밍 재생</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title"><i class="fa-solid fa-code"></i> AudioPlayer 클래스 (Kotlin)</div>
+<pre><span class="kw">class</span> <span class="cls">AudioPlayer</span>(private <span class="kw">val</span> context: <span class="cls">Context</span>) {
+
+    <span class="kw">private var</span> mediaPlayer: <span class="cls">MediaPlayer</span>? = <span class="kw">null</span>
+
+    <span class="cmt">// 로컬 파일 재생</span>
+    <span class="kw">fun</span> <span class="fn">playFile</span>(filePath: <span class="cls">String</span>) {
+        <span class="fn">release</span>()
+        mediaPlayer = <span class="cls">MediaPlayer</span>().apply {
+            <span class="fn">setDataSource</span>(filePath)
+            <span class="fn">prepare</span>(); <span class="fn">start</span>()
+        }
+    }
+
+    <span class="cmt">// URL 스트리밍 재생</span>
+    <span class="kw">fun</span> <span class="fn">playUrl</span>(url: <span class="cls">String</span>) {
+        <span class="fn">release</span>()
+        mediaPlayer = <span class="cls">MediaPlayer</span>().apply {
+            <span class="fn">setDataSource</span>(context, Uri.<span class="fn">parse</span>(url))
+            <span class="fn">prepareAsync</span>()
+            <span class="fn">setOnPreparedListener</span> { it.<span class="fn">start</span>() }
+        }
+    }
+
+    <span class="cmt">// 앱 내 Asset (기본 사운드)</span>
+    <span class="kw">fun</span> <span class="fn">playAsset</span>(assetName: <span class="cls">String</span>) {
+        <span class="fn">release</span>()
+        <span class="kw">val</span> afd = context.assets.<span class="fn">openFd</span>(assetName)
+        mediaPlayer = <span class="cls">MediaPlayer</span>().apply {
+            <span class="fn">setDataSource</span>(afd.fileDescriptor, afd.startOffset, afd.length)
+            <span class="fn">prepare</span>(); <span class="fn">start</span>()
+        }
+    }
+
+    <span class="kw">fun</span> <span class="fn">release</span>() { mediaPlayer?.<span class="fn">release</span>(); mediaPlayer = <span class="kw">null</span> }
+}</pre>
+    </div>
+
+    <div class="card">
+      <div class="card-title"><i class="fa-solid fa-folder-open"></i> 기본 내장 사운드 (assets/sounds/)</div>
+      <table>
+        <thead><tr><th>파일명</th><th>용도</th><th>재생 시점</th></tr></thead>
+        <tbody>
+          <tr><td class="mono">hello.mp3</td><td>인사 모션 효과음</td><td>버튼 1 탭</td></tr>
+          <tr><td class="mono">wave.mp3</td><td>손흔들기 효과음</td><td>버튼 2 탭</td></tr>
+          <tr><td class="mono">beep.mp3</td><td>기본 효과음</td><td>커스텀 버튼 (사운드 미설정 시)</td></tr>
+          <tr><td class="mono">connect.mp3</td><td>BT 연결 성공</td><td>fb153 연결 완료 시</td></tr>
+          <tr><td class="mono">disconnect.mp3</td><td>BT 연결 해제</td><td>연결 끊김 시</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ══════════════════════════════════════════════════════
+       TAB 7: 카메라 + YOLO
+  ══════════════════════════════════════════════════════ -->
+  <section class="section" id="tab-yolo">
+    <h2 class="section-title"><span class="icon">📷</span> 카메라 + YOLOv5 사물인식</h2>
+
+    <div class="card">
+      <div class="card-title"><i class="fa-solid fa-arrows-left-right"></i> PC → Android 추론 방식 변환</div>
+      <div class="grid-2">
+        <div style="background:rgba(247,129,102,.06);border:1px solid rgba(247,129,102,.2);border-radius:10px;padding:1rem">
+          <div style="font-weight:700;color:var(--accent3);margin-bottom:.5rem">🖥️ 기존 (PC)</div>
+          <div style="font-size:.85rem;color:var(--text-muted)">
+            PyTorch <code>torch.hub.load</code><br>
+            YOLOv5s .pt 모델<br>
+            GPU 가속 (CUDA)<br>
+            30+ fps
+          </div>
+        </div>
+        <div style="background:rgba(63,185,80,.06);border:1px solid rgba(63,185,80,.2);border-radius:10px;padding:1rem">
+          <div style="font-weight:700;color:var(--accent2);margin-bottom:.5rem">📱 목표 (Android)</div>
+          <div style="font-size:.85rem;color:var(--text-muted)">
+            TensorFlow Lite <code>Interpreter</code><br>
+            YOLOv5s_fp16.tflite<br>
+            GPU Delegate<br>
+            10~15 fps
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title"><i class="fa-solid fa-rotate"></i> 모델 변환 순서</div>
+      <div class="state-flow" style="flex-direction:column;align-items:flex-start;gap:.3rem">
+        <div class="state-node">1️⃣ YOLOv5s.pt (PyTorch 원본)</div>
+        <div style="padding-left:1.5rem;color:var(--text-muted);font-size:.82rem">↓ <code>python export.py --weights yolov5s.pt --include tflite --img 320</code></div>
+        <div class="state-node">2️⃣ yolov5s_fp16.tflite 생성</div>
+        <div style="padding-left:1.5rem;color:var(--text-muted);font-size:.82rem">↓ app/src/main/assets/models/ 폴더에 복사</div>
+        <div class="state-node">3️⃣ coco_labels.txt (80개 클래스) 함께 배치</div>
+        <div style="padding-left:1.5rem;color:var(--text-muted);font-size:.82rem">↓ Android TFLite Interpreter 로드</div>
+        <div class="state-node active-state">4️⃣ 실시간 추론 시작 ✓</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title"><i class="fa-solid fa-code-branch"></i> 인식 → 자동 모션 트리거 (Python MotionSequencer 포팅)</div>
+      <div class="state-flow">
+        <div class="state-node active-state">IDLE (감지대기)</div>
+        <div class="state-arrow">→ person 94% 감지 →</div>
+        <div class="state-node" style="border-color:rgba(255,166,87,.4);color:var(--accent5)">ACTION (모션19 실행, 7초)</div>
+        <div class="state-arrow">→ 7초 후 →</div>
+        <div class="state-node" style="border-color:rgba(210,168,255,.4);color:var(--accent4)">RETURN (모션1 복귀, 3초)</div>
+        <div class="state-arrow">→ 3초 후 →</div>
+        <div class="state-node active-state">IDLE ↩</div>
+      </div>
+      <table style="margin-top:1rem">
+        <thead><tr><th>기존 Python 설정</th><th>Android 기본값</th><th>설정 변경</th></tr></thead>
+        <tbody>
+          <tr><td><code>CONF_THRESHOLD = 0.60</code></td><td class="center">60%</td><td class="center">설정 화면 ✅</td></tr>
+          <tr><td><code>ACTION_HOLD_SEC = 7</code></td><td class="center">7,000ms</td><td class="center">설정 화면 ✅</td></tr>
+          <tr><td><code>RETURN_HOLD_SEC = 3</code></td><td class="center">3,000ms</td><td class="center">설정 화면 ✅</td></tr>
+          <tr><td><code>RETURN_MOTION = 1</code></td><td class="center">모션 1</td><td class="center">설정 화면 ✅</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="card">
+      <div class="card-title"><i class="fa-solid fa-gauge-high"></i> 성능 요구사항</div>
+      <div class="grid-3">
+        <div style="text-align:center;background:var(--surface2);border-radius:8px;padding:1rem">
+          <div style="font-size:1.8rem;font-weight:700;color:var(--accent)">10~15</div>
+          <div style="font-size:.8rem;color:var(--text-muted)">목표 FPS</div>
+        </div>
+        <div style="text-align:center;background:var(--surface2);border-radius:8px;padding:1rem">
+          <div style="font-size:1.8rem;font-weight:700;color:var(--accent2)">&lt;100ms</div>
+          <div style="font-size:.8rem;color:var(--text-muted)">추론 지연</div>
+        </div>
+        <div style="text-align:center;background:var(--surface2);border-radius:8px;padding:1rem">
+          <div style="font-size:1.8rem;font-weight:700;color:var(--accent5)">320px</div>
+          <div style="font-size:.8rem;color:var(--text-muted)">모델 입력 크기</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══════════════════════════════════════════════════════
+       TAB 8: 코드 구조
+  ══════════════════════════════════════════════════════ -->
+  <section class="section" id="tab-code">
+    <h2 class="section-title"><span class="icon">🗂️</span> Android 프로젝트 코드 구조</h2>
+
+    <div class="grid-2">
+      <div class="card">
+        <div class="card-title"><i class="fa-solid fa-folder-tree"></i> 파일 트리</div>
+        <div class="file-tree">
+<pre style="background:transparent;border:none;padding:0;font-size:.8rem">
+<span class="dir">app/src/main/</span>
+├── <span class="dir">java/com/fb153/robotcontrol/</span>
+│   ├── <span class="hl">MainActivity.kt</span>
+│   ├── <span class="dir">bluetooth/</span>
+│   │   ├── <span class="hl">BluetoothManager.kt</span>
+│   │   ├── <span class="file">PacketBuilder.kt</span>
+│   │   └── <span class="file">MotionRepeater.kt</span>
+│   ├── <span class="dir">ui/control/</span>
+│   │   ├── <span class="hl">ControlFragment.kt</span>
+│   │   ├── <span class="hl">JoystickView.kt</span>
+│   │   ├── <span class="hl">ActionButtonPanel.kt</span>
+│   │   └── <span class="file">ActionButtonView.kt</span>
+│   ├── <span class="dir">ui/camera/</span>
+│   │   ├── <span class="hl">CameraPreviewView.kt</span>
+│   │   └── <span class="hl">DetectionOverlayView.kt</span>
+│   ├── <span class="dir">ui/settings/</span>
+│   │   ├── <span class="file">SettingsFragment.kt</span>
+│   │   ├── <span class="file">BluetoothScanFragment.kt</span>
+│   │   └── <span class="file">ButtonCommandEditorDialog.kt</span>
+│   ├── <span class="dir">detection/</span>
+│   │   ├── <span class="hl">YOLOv5Detector.kt</span>
+│   │   ├── <span class="hl">DetectionMotionHandler.kt</span>
+│   │   └── <span class="file">Detection.kt</span>
+│   ├── <span class="dir">audio/</span>
+│   │   └── <span class="hl">AudioPlayer.kt</span>
+│   └── <span class="dir">command/</span>
+│       ├── <span class="hl">CommandSetManager.kt</span>
+│       ├── <span class="file">ActionButtonConfig.kt</span>
+│       └── <span class="file">CommandSet.kt</span>
+├── <span class="dir">assets/</span>
+│   ├── <span class="dir">models/</span>
+│   │   ├── <span class="file">yolov5s.tflite</span>
+│   │   └── <span class="file">coco_labels.txt</span>
+│   └── <span class="dir">sounds/</span>
+│       ├── <span class="file">hello.mp3</span>
+│       ├── <span class="file">wave.mp3</span>
+│       └── <span class="file">connect.mp3</span>
+└── <span class="dir">res/layout/</span>
+    ├── <span class="file">activity_main.xml</span>
+    ├── <span class="file">fragment_control.xml</span>
+    └── <span class="file">dialog_button_editor.xml</span>
+</pre>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title"><i class="fa-solid fa-shield-halved"></i> AndroidManifest 권한</div>
+        <div style="display:flex;flex-wrap:wrap;gap:.4rem;margin-bottom:1rem">
+          <span class="perm-badge" style="background:rgba(88,166,255,.1);border:1px solid rgba(88,166,255,.3);color:#79c0ff"><i class="fa-solid fa-bluetooth"></i> BLUETOOTH_CONNECT</span>
+          <span class="perm-badge" style="background:rgba(88,166,255,.1);border:1px solid rgba(88,166,255,.3);color:#79c0ff"><i class="fa-solid fa-bluetooth"></i> BLUETOOTH_SCAN</span>
+          <span class="perm-badge" style="background:rgba(63,185,80,.1);border:1px solid rgba(63,185,80,.3);color:#56d364"><i class="fa-solid fa-camera"></i> CAMERA</span>
+          <span class="perm-badge" style="background:rgba(255,166,87,.1);border:1px solid rgba(255,166,87,.3);color:#ffa657"><i class="fa-solid fa-music"></i> READ_MEDIA_AUDIO</span>
+          <span class="perm-badge" style="background:rgba(210,168,255,.1);border:1px solid rgba(210,168,255,.3);color:#d2a8ff"><i class="fa-solid fa-wifi"></i> INTERNET</span>
+        </div>
+
+        <div class="card-title" style="margin-top:1rem"><i class="fa-solid fa-wrench"></i> build.gradle 주요 의존성</div>
+        <table>
+          <thead><tr><th>라이브러리</th><th>버전</th><th>용도</th></tr></thead>
+          <tbody>
+            <tr><td class="mono">kotlinx-coroutines</td><td>1.7.3</td><td>비동기 BT 통신</td></tr>
+            <tr><td class="mono">camera-camera2/view</td><td>1.3.0</td><td>카메라 프리뷰</td></tr>
+            <tr><td class="mono">tensorflow-lite</td><td>2.13.0</td><td>YOLOv5 추론</td></tr>
+            <tr><td class="mono">tensorflow-lite-gpu</td><td>2.13.0</td><td>GPU 가속</td></tr>
+            <tr><td class="mono">room-runtime</td><td>2.6.0</td><td>명령어 셋 저장</td></tr>
+            <tr><td class="mono">gson</td><td>2.10.1</td><td>JSON 직렬화</td></tr>
+          </tbody>
+        </table>
+
+        <div class="card-title" style="margin-top:1rem"><i class="fa-solid fa-mobile-screen-button"></i> 지원 환경</div>
+        <table>
+          <thead><tr><th>항목</th><th>요구사항</th></tr></thead>
+          <tbody>
+            <tr><td>Android Studio</td><td>Ladybug 2024.2.1+</td></tr>
+            <tr><td>Kotlin</td><td>1.9.x</td></tr>
+            <tr><td>minSdk</td><td>26 (Android 8.0)</td></tr>
+            <tr><td>targetSdk</td><td>34 (Android 14)</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══════════════════════════════════════════════════════
+       TAB 9: 로드맵
+  ══════════════════════════════════════════════════════ -->
+  <section class="section" id="tab-roadmap">
+    <h2 class="section-title"><span class="icon">🗺️</span> 구현 로드맵</h2>
+
+    <div class="phase-card phase-1">
+      <div class="phase-title" style="color:var(--accent)">Phase 1 — Bluetooth 기본 통신 <span style="font-weight:400;font-size:.85rem;color:var(--text-muted)">예상: 1~2주</span></div>
+      <div class="phase-item">Android 프로젝트 생성 (Kotlin + MVVM 구조)</div>
+      <div class="phase-item">BluetoothManager 구현 (스캔, 연결, SPP RFCOMM)</div>
+      <div class="phase-item">PacketBuilder 구현 (Python robot_controller.py 포팅)</div>
+      <div class="phase-item">간단한 테스트 UI로 fb153 연결 및 패킷 전송 확인</div>
+    </div>
+
+    <div class="phase-card phase-2">
+      <div class="phase-title" style="color:var(--accent2)">Phase 2 — 조이스틱 + 버튼 UI <span style="font-weight:400;font-size:.85rem;color:var(--text-muted)">예상: 2~3주</span></div>
+      <div class="phase-item">JoystickView 커스텀 뷰 구현 (터치 입력, 8방향 판정)</div>
+      <div class="phase-item">ActionButtonPanel (3×3 그리드) 구현</div>
+      <div class="phase-item">CommandSetManager 구현 (저장/불러오기)</div>
+      <div class="phase-item">버튼 편집 다이얼로그 구현 (이름, 모션, MP3)</div>
+    </div>
+
+    <div class="phase-card phase-3">
+      <div class="phase-title" style="color:var(--accent5)">Phase 3 — MP3 연동 <span style="font-weight:400;font-size:.85rem;color:var(--text-muted)">예상: 1주</span></div>
+      <div class="phase-item">AudioPlayer 구현 (로컬파일/URL/Asset)</div>
+      <div class="phase-item">버튼-MP3 연결 UI</div>
+      <div class="phase-item">기본 사운드 파일 준비 (hello, wave, connect 등)</div>
+    </div>
+
+    <div class="phase-card phase-4">
+      <div class="phase-title" style="color:var(--accent4)">Phase 4 — 카메라 + YOLO <span style="font-weight:400;font-size:.85rem;color:var(--text-muted)">예상: 2~3주</span></div>
+      <div class="phase-item">CameraX 연동 (프리뷰 + ImageAnalysis)</div>
+      <div class="phase-item">YOLOv5s TFLite 모델 변환 및 배치</div>
+      <div class="phase-item">YOLOv5Detector 구현 (추론 + NMS)</div>
+      <div class="phase-item">DetectionOverlayView 구현 (바운딩 박스 시각화)</div>
+      <div class="phase-item">DetectionMotionHandler 구현 (MotionSequencer 포팅)</div>
+    </div>
+
+    <div class="phase-card phase-5">
+      <div class="phase-title" style="color:var(--accent3)">Phase 5 — 통합 및 최적화 <span style="font-weight:400;font-size:.85rem;color:var(--text-muted)">예상: 1~2주</span></div>
+      <div class="phase-item">전체 화면 레이아웃 통합</div>
+      <div class="phase-item">성능 최적화 (추론 fps, 배터리 소모)</div>
+      <div class="phase-item">설정 화면 완성 (매핑 편집, 임계값 조정)</div>
+      <div class="phase-item">실기기 테스트 (fb153 로봇 연결)</div>
+    </div>
+
+    <div class="card" style="margin-top:1.5rem">
+      <div class="card-title"><i class="fa-solid fa-triangle-exclamation"></i> 알려진 제약사항</div>
+      <div class="info-box warn">
+        <span class="icon">⚠️</span>
+        <div>iOS는 Bluetooth Classic SPP 접근 불가 → <strong>Android 전용</strong> 앱</div>
+      </div>
+      <div class="info-box warn">
+        <span class="icon">⚠️</span>
+        <div>Android 12+ 에서 <code>BLUETOOTH_CONNECT</code> / <code>BLUETOOTH_SCAN</code> 런타임 권한 처리 필수</div>
+      </div>
+      <div class="info-box">
+        <span class="icon">💡</span>
+        <div>YOLOv5 TFLite 추론 속도는 기기 성능에 따라 달라짐. GPU Delegate 미지원 시 CPU 폴백</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title"><i class="fa-solid fa-calendar-plus"></i> 향후 추가 예정 기능</div>
+      <table>
+        <thead><tr><th>기능</th><th>설명</th><th>우선순위</th></tr></thead>
+        <tbody>
+          <tr><td>TTS 연동</td><td>인식 결과를 음성으로 읽어주기</td><td class="center"><span class="tag tag-orange">보통</span></td></tr>
+          <tr><td>로봇 배터리 모니터링</td><td>BT로 로봇 배터리 잔량 수신</td><td class="center"><span class="tag tag-blue">높음</span></td></tr>
+          <tr><td>모션 스크립트 녹화</td><td>버튼 입력 시퀀스 녹화/재생</td><td class="center"><span class="tag tag-orange">보통</span></td></tr>
+          <tr><td>Wi-Fi 모드</td><td>BT 대신 Wi-Fi TCP 소켓 제어</td><td class="center"><span class="tag tag-purple">낮음</span></td></tr>
+          <tr><td>클라우드 백업</td><td>버튼 설정 클라우드 동기화</td><td class="center"><span class="tag tag-purple">낮음</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+</div>
+
+<!-- footer -->
+<footer style="text-align:center;padding:2rem;color:var(--text-dim);font-size:.8rem;border-top:1px solid var(--border);margin-top:2rem">
+  fb153 Humanoid Robot Android App 설계 문서 v1.0 · 2026-05-20
+  <br>
+  원본 소스: <a href="https://github.com/EmmettHwang/202605_001-YoloV5WithRobot" style="color:var(--accent)" target="_blank">EmmettHwang/202605_001-YoloV5WithRobot</a>
+</footer>
+
+<script>
+  // 탭 전환
+  const tabs = document.querySelectorAll('.nav-tab');
+  const sections = document.querySelectorAll('.section');
+
+  tabs.forEach(tab => {
+    tab.addEventListener('click', () => {
+      const target = tab.dataset.tab;
+      tabs.forEach(t => t.classList.remove('active'));
+      sections.forEach(s => s.classList.remove('active'));
+      tab.classList.add('active');
+      document.getElementById('tab-' + target).classList.add('active');
+    });
+  });
+
+  // 버튼 클릭 데모
+  document.querySelectorAll('.btn-demo').forEach(btn => {
+    btn.addEventListener('click', () => {
+      btn.style.transform = 'scale(0.88)';
+      setTimeout(() => { btn.style.transform = ''; }, 150);
+    });
+  });
+</script>
+</body>
+</html>
