@@ -6,6 +6,7 @@ import 'command/command_set_manager.dart';
 import 'models/yolo_action_config.dart';
 import 'services/audio_service.dart';
 import 'services/robot_name_service.dart';
+import 'services/robot_nickname_service.dart';
 import 'services/voice_command_service.dart';
 import 'ui/control/control_screen.dart';
 
@@ -41,6 +42,10 @@ class RoboCommanderApp extends StatelessWidget {
         // YOLO 동작 설정 관리자 (singleton)
         ChangeNotifierProvider<YoloActionManager>(
           create: (_) => YoloActionManager(),
+        ),
+        // MAC별 로봇 별명 서비스
+        ChangeNotifierProvider<RobotNicknameService>(
+          create: (_) => RobotNicknameService(),
         ),
       ],
       child: MaterialApp(
@@ -151,6 +156,11 @@ class _SplashScreenState extends State<SplashScreen>
     // 3. YoloActionManager 로드
     if (mounted) {
       await context.read<YoloActionManager>().load();
+    }
+
+    // 3-1. 로봇 별명 서비스 로드
+    if (mounted) {
+      await context.read<RobotNicknameService>().load();
     }
 
     // 4. BluetoothManager 초기화

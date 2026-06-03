@@ -9,6 +9,7 @@ import '../../services/audio_service.dart';
 import '../../services/robot_name_service.dart';
 import '../../services/yolo_detector_service.dart';
 import '../camera/camera_preview_widget.dart';
+import '../camera/custom_vision_screen.dart';
 import '../settings/settings_screen.dart';
 import '../settings/vision_settings_screen.dart';
 import '../bluetooth/bluetooth_scan_screen.dart';
@@ -201,6 +202,13 @@ class _ControlScreenState extends State<ControlScreen>
     );
   }
 
+  void _openCustomVision() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const CustomVisionScreen()),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final btManager = context.watch<BluetoothManager>();
@@ -388,16 +396,27 @@ class _ControlScreenState extends State<ControlScreen>
               ),
             ),
 
-          // 비전 설정 버튼 (새로 추가)
+          // 직접 학습 버튼
           IconButton(
-            icon:
-                const Icon(Icons.remove_red_eye, color: Colors.cyanAccent, size: 20),
+            icon: const Icon(Icons.auto_awesome,
+                color: Colors.purpleAccent, size: 20),
+            tooltip: '직접 학습 (Teachable Machine)',
+            onPressed: _openCustomVision,
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(),
+          ),
+          const SizedBox(width: 4),
+
+          // 비전 설정 버튼
+          IconButton(
+            icon: const Icon(Icons.remove_red_eye,
+                color: Colors.cyanAccent, size: 20),
             tooltip: '비전 설정',
             onPressed: _openVisionSettings,
             padding: EdgeInsets.zero,
             constraints: const BoxConstraints(),
           ),
-          const SizedBox(width: 8),
+          const SizedBox(width: 4),
 
           // 설정 버튼
           IconButton(
@@ -461,7 +480,7 @@ class _ControlScreenState extends State<ControlScreen>
             ),
           ],
           const Spacer(),
-          // YOLO 토글 칩
+          // 객체인식 토글 칩
           GestureDetector(
             onTap: () {
               setState(() {
@@ -475,9 +494,9 @@ class _ControlScreenState extends State<ControlScreen>
                   ? (_yoloService.modelState == YoloModelState.loading
                       ? 'AI 로딩 ${(_yoloService.loadingProgress * 100).toInt()}%'
                       : _detectedObject == '-'
-                          ? 'YOLO ON'
+                          ? '객체인식 ON'
                           : '인식: $_detectedObject')
-                  : 'YOLO OFF',
+                  : '객체인식 OFF',
               color: _isYoloActive
                   ? (_yoloService.modelState == YoloModelState.loading
                       ? Colors.amber

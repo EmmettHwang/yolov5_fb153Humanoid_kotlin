@@ -662,84 +662,62 @@ class _MotionSpinnerState extends State<_MotionSpinner> {
     final motionDesc = info != null ? info.desc : '사용자 정의';
 
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
       decoration: BoxDecoration(
         color: Colors.white.withValues(alpha: 0.06),
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: Colors.cyan.withValues(alpha: 0.3)),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.cyan.withValues(alpha: 0.35)),
       ),
       child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // 모션 이름 표시줄
-          Row(
-            children: [
-              Text(
-                modeName,
-                style: TextStyle(
-                  color: Colors.cyan.withValues(alpha: 0.7),
-                  fontSize: 10,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-              const SizedBox(width: 6),
-              Expanded(
-                child: Text(
-                  '$motionName  ·  $motionDesc',
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 13,
-                    fontWeight: FontWeight.w600,
-                  ),
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          // 조작 행: [−10] [−] [숫자] [+] [+10]
+          // ── 조작 행: [−10] [−] [번호 크게] [+] [+10] ──
           Row(
             children: [
               _SpinBtn(label: '−10', onTap: () => _change(-10), fontSize: 10),
               const SizedBox(width: 4),
               _SpinBtn(label: '−', onTap: () => _change(-1)),
               const SizedBox(width: 8),
+              // 중앙: 모션 번호 크게 + 직접 입력
               Expanded(
-                child: TextField(
-                  controller: _ctrl,
-                  keyboardType: TextInputType.number,
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(
-                    color: Colors.cyanAccent,
-                    fontSize: 20,
-                    fontWeight: FontWeight.bold,
+                child: Container(
+                  height: 64,
+                  decoration: BoxDecoration(
+                    color: Colors.black.withValues(alpha: 0.35),
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(
+                      color: Colors.cyanAccent.withValues(alpha: 0.6),
+                      width: 1.5,
+                    ),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.cyanAccent.withValues(alpha: 0.15),
+                        blurRadius: 8,
+                      ),
+                    ],
                   ),
-                  decoration: InputDecoration(
-                    isDense: true,
-                    contentPadding: const EdgeInsets.symmetric(vertical: 6),
-                    filled: true,
-                    fillColor: Colors.black.withValues(alpha: 0.25),
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(6),
-                      borderSide:
-                          BorderSide(color: Colors.cyan.withValues(alpha: 0.4)),
+                  child: TextField(
+                    controller: _ctrl,
+                    keyboardType: TextInputType.number,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                      color: Colors.cyanAccent,
+                      fontSize: 32,
+                      fontWeight: FontWeight.bold,
+                      fontFamily: 'monospace',
+                      letterSpacing: 2,
                     ),
-                    enabledBorder: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(6),
-                      borderSide:
-                          BorderSide(color: Colors.cyan.withValues(alpha: 0.4)),
+                    decoration: const InputDecoration(
+                      isDense: true,
+                      border: InputBorder.none,
+                      contentPadding: EdgeInsets.symmetric(vertical: 14),
                     ),
-                    focusedBorder: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(6),
-                      borderSide: const BorderSide(color: Colors.cyanAccent),
-                    ),
+                    inputFormatters: [
+                      FilteringTextInputFormatter.digitsOnly,
+                      _MaxValueFormatter(255),
+                    ],
+                    onSubmitted: _onTextSubmit,
+                    onEditingComplete: () => _onTextSubmit(_ctrl.text),
                   ),
-                  inputFormatters: [
-                    FilteringTextInputFormatter.digitsOnly,
-                    _MaxValueFormatter(255),
-                  ],
-                  onSubmitted: _onTextSubmit,
-                  onEditingComplete: () => _onTextSubmit(_ctrl.text),
                 ),
               ),
               const SizedBox(width: 8),
@@ -747,6 +725,47 @@ class _MotionSpinnerState extends State<_MotionSpinner> {
               const SizedBox(width: 4),
               _SpinBtn(label: '+10', onTap: () => _change(10), fontSize: 10),
             ],
+          ),
+          const SizedBox(height: 10),
+          // ── 모션 이름 + 설명 (번호 아래) ──
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+            decoration: BoxDecoration(
+              color: Colors.cyan.withValues(alpha: 0.08),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: Colors.cyan.withValues(alpha: 0.2),
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  child: Text(
+                    modeName,
+                    style: TextStyle(
+                      color: Colors.cyanAccent.withValues(alpha: 0.9),
+                      fontSize: 9,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    '$motionName  —  $motionDesc',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w500,
+                    ),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ],
+            ),
           ),
         ],
       ),

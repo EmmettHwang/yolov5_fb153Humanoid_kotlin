@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -18,8 +19,15 @@ enum BtConnectionState {
 class BluetoothDeviceInfo {
   final String name;
   final String address; // 전체 MAC (예: 00:11:22:33:AA:BB)
+  final int rssi;       // 신호 세기 (discovery 전용)
+  final bool bonded;    // 이미 페어링됨
 
-  const BluetoothDeviceInfo({required this.name, required this.address});
+  const BluetoothDeviceInfo({
+    required this.name,
+    required this.address,
+    this.rssi = 0,
+    this.bonded = false,
+  });
 
   String get macSuffix {
     final parts = address.split(':');
@@ -42,10 +50,6 @@ class BluetoothDeviceInfo {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // BluetoothManager — MethodChannel + EventChannel 기반 네이티브 BT Classic
-//
-// Android 네이티브 (BluetoothClassicPlugin.kt) 연결 전략:
-//   1순위: reflection createRfcommSocket(channel=1)  ← fb153 필수
-//   2순위: createRfcommSocketToServiceRecord(SPP UUID) fallback
 // ─────────────────────────────────────────────────────────────────────────────
 class BluetoothManager extends ChangeNotifier {
   static final BluetoothManager _instance = BluetoothManager._internal();
@@ -71,13 +75,22 @@ class BluetoothManager extends ChangeNotifier {
   bool get isConnected  => _connectionState == BtConnectionState.connected;
   bool get isScanning   => _connectionState == BtConnectionState.scanning;
 
+  // ── Discovery 상태 ────────────────────────────────────────────
+  bool _isDiscovering = false;
+  bool get isDiscovering => _isDiscovering;
+
   // ── 기기 정보 ─────────────────────────────────────────────────
   BluetoothDeviceInfo? _connectedDevice;
   BluetoothDeviceInfo? get connectedDevice => _connectedDevice;
 
+  // 페어링된 기기 목록 (탭 1)
   final List<BluetoothDeviceInfo> _discoveredDevices = [];
   List<BluetoothDeviceInfo> get discoveredDevices =>
       List.unmodifiable(_discoveredDevices);
+
+  // 미페어링 새 기기 목록 (탭 2)
+  final List<BluetoothDeviceInfo> _newDevices = [];
+  List<BluetoothDeviceInfo> get newDevices => List.unmodifiable(_newDevices);
 
   // ── 오류 / 통계 ───────────────────────────────────────────────
   String? _errorMessage;
@@ -95,6 +108,10 @@ class BluetoothManager extends ChangeNotifier {
 
   String? _lastMac;
   String? get lastMac => _lastMac;
+
+  // ── 페어링 대기 상태 ──────────────────────────────────────────
+  // ignore: unused_field
+  String? _bondingAddress;
 
   // ─────────────────────────────────────────────────────────────
   void _setState(BtConnectionState state) {
@@ -127,7 +144,6 @@ class BluetoothManager extends ChangeNotifier {
   }
 
   Future<bool> requestEnable() async {
-    // Android 13+에서는 직접 켜기 API 없음 — 사용자에게 유도
     return await isBluetoothEnabled();
   }
 
@@ -148,10 +164,41 @@ class BluetoothManager extends ChangeNotifier {
     final scanStatus = await Permission.bluetoothScan.status;
     if (scanStatus.isDenied || scanStatus.isRestricted) {
       await Permission.bluetoothScan.request();
-      // scan 권한 없어도 getBondedDevices 동작 가능 — 계속 진행
     }
 
     return true;
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  //  Discovery용 위치 권한 (Android 11 이하 필요)
+  // ══════════════════════════════════════════════════════════════
+  Future<bool> _ensureLocationPermission({BuildContext? context}) async {
+    final locStatus = await Permission.locationWhenInUse.status;
+    if (locStatus.isGranted) return true;
+
+    if (locStatus.isDenied) {
+      final result = await Permission.locationWhenInUse.request();
+      if (result.isGranted) return true;
+    }
+
+    if (locStatus.isPermanentlyDenied) {
+      if (context != null && context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: const Text(
+                '위치 권한이 필요합니다 (BT 검색). 앱 설정에서 허용해 주세요.'),
+            action: SnackBarAction(
+              label: '설정',
+              onPressed: openAppSettings,
+            ),
+            duration: const Duration(seconds: 5),
+          ),
+        );
+      }
+      return false;
+    }
+
+    return false;
   }
 
   // ══════════════════════════════════════════════════════════════
@@ -175,10 +222,10 @@ class BluetoothManager extends ChangeNotifier {
         return BluetoothDeviceInfo(
           name:    m['name']    as String? ?? '알 수 없는 기기',
           address: m['address'] as String? ?? '',
+          bonded:  true,
         );
       }).toList();
 
-      // fb153 필터
       final fb153List = filterPrefix.isEmpty
           ? bonded
           : bonded.where((d) {
@@ -187,7 +234,6 @@ class BluetoothManager extends ChangeNotifier {
               return n.contains(f);
             }).toList();
 
-      // fb153 없으면 전체 페어링 기기
       final targetList = fb153List.isNotEmpty ? fb153List : bonded;
 
       _discoveredDevices.addAll(
@@ -198,6 +244,66 @@ class BluetoothManager extends ChangeNotifier {
     } on PlatformException catch (e) {
       _errorMessage = '스캔 오류: ${e.message}';
       _setState(BtConnectionState.error);
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  //  discoverDevices — 미페어링 기기 실시간 검색
+  // ══════════════════════════════════════════════════════════════
+  Future<void> discoverDevices({BuildContext? context}) async {
+    _newDevices.clear();
+    _errorMessage = null;
+    _isDiscovering = true;
+    notifyListeners();
+
+    // BT 권한
+    final hasBt = await _ensureBluetoothPermissions();
+    if (!hasBt) {
+      _isDiscovering = false;
+      _errorMessage = 'Bluetooth 권한이 필요합니다';
+      notifyListeners();
+      return;
+    }
+
+    // 위치 권한 (Android 11 이하)
+    await _ensureLocationPermission(context: context);
+    // 위치 권한 거부되어도 Android 12+에서는 진행 가능
+
+    try {
+      await _methodChannel.invokeMethod<bool>('startDiscovery');
+      // 결과는 EventChannel로 수신 (_onNativeEvent에서 처리)
+      // 타임아웃: 12초 후 자동 종료
+      Future.delayed(const Duration(seconds: 12), () {
+        if (_isDiscovering) {
+          stopDiscovery();
+        }
+      });
+    } on PlatformException catch (e) {
+      _isDiscovering = false;
+      _errorMessage = 'Discovery 오류: ${e.message}';
+      notifyListeners();
+    }
+  }
+
+  // ── Discovery 중지 ────────────────────────────────────────────
+  Future<void> stopDiscovery() async {
+    try {
+      await _methodChannel.invokeMethod<bool>('stopDiscovery');
+    } catch (_) {}
+    _isDiscovering = false;
+    notifyListeners();
+  }
+
+  // ── 페어링 요청 ───────────────────────────────────────────────
+  Future<String> requestBond(String address) async {
+    try {
+      _bondingAddress = address;
+      notifyListeners();
+      final result = await _methodChannel.invokeMethod<String>(
+          'createBond', {'address': address});
+      return result ?? 'failed';
+    } on PlatformException catch (e) {
+      return 'error: ${e.message}';
     }
   }
 
@@ -251,7 +357,6 @@ class BluetoothManager extends ChangeNotifier {
         'connect',
         {'address': device.address},
       );
-      // 실제 연결 완료는 EventChannel 'connected' 이벤트로 처리됨
       _connectedDevice = device;
 
       final prefs = await SharedPreferences.getInstance();
@@ -267,7 +372,9 @@ class BluetoothManager extends ChangeNotifier {
   }
 
   // ══════════════════════════════════════════════════════════════
-  //  네이티브 이벤트 수신 (connected / disconnected / data / error)
+  //  네이티브 이벤트 수신 (connected / disconnected / data / error
+  //                        / device_found / discovery_finished
+  //                        / bond_success / bond_failed)
   // ══════════════════════════════════════════════════════════════
   void _onNativeEvent(dynamic event) {
     if (event is! Map) return;
@@ -282,7 +389,6 @@ class BluetoothManager extends ChangeNotifier {
         if (_connectionState != BtConnectionState.error) {
           _setState(BtConnectionState.disconnected);
         }
-        // 마지막 기기가 있으면 3초 후 자동 재연결 시도
         _scheduleAutoReconnect();
 
       case 'error':
@@ -291,8 +397,60 @@ class BluetoothManager extends ChangeNotifier {
         _setState(BtConnectionState.error);
 
       case 'data':
-        // 수신 데이터 (필요 시 확장)
         debugPrint('[BT] 수신 데이터: ${event['bytes']}');
+
+      // ── Discovery 이벤트 ────────────────────────────
+      case 'discovery_started':
+        _isDiscovering = true;
+        notifyListeners();
+
+      case 'device_found':
+        final address = event['address'] as String? ?? '';
+        final name    = event['name']    as String? ?? '알 수 없는 기기';
+        final rssi    = event['rssi']    as int? ?? 0;
+        final bonded  = event['bonded']  as bool? ?? false;
+
+        // 중복 제거
+        final exists = _newDevices.any((d) => d.address == address);
+        if (!exists && address.isNotEmpty) {
+          _newDevices.add(BluetoothDeviceInfo(
+            name:    name,
+            address: address,
+            rssi:    rssi,
+            bonded:  bonded,
+          ));
+          // RSSI 강한 순 정렬
+          _newDevices.sort((a, b) => b.rssi.compareTo(a.rssi));
+          notifyListeners();
+        }
+
+      case 'discovery_finished':
+        _isDiscovering = false;
+        notifyListeners();
+
+      // ── Bond 이벤트 ─────────────────────────────────
+      case 'bond_success':
+        final address = event['address'] as String? ?? '';
+        debugPrint('[BT] 페어링 성공: $address');
+        _bondingAddress = null;
+        // 페어링된 기기 목록 갱신
+        if (address.isNotEmpty) {
+          final idx = _newDevices.indexWhere((d) => d.address == address);
+          if (idx >= 0) {
+            final dev = _newDevices[idx];
+            _newDevices[idx] = BluetoothDeviceInfo(
+              name: dev.name, address: dev.address,
+              rssi: dev.rssi, bonded: true,
+            );
+          }
+        }
+        notifyListeners();
+
+      case 'bond_failed':
+        final address = event['address'] as String? ?? '';
+        debugPrint('[BT] 페어링 실패: $address');
+        _bondingAddress = null;
+        notifyListeners();
     }
   }
 

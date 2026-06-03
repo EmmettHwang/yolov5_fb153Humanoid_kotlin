@@ -484,38 +484,101 @@ class _YoloActionEditorDialogState extends State<_YoloActionEditorDialog> {
     );
   }
 
-  // 모션 번호 스피너 (간단 버전)
+  // 모션 번호 스피너 (번호 중앙 크게)
   Widget _buildMotionSpinner() {
-    return Row(
+    final info = MotionTable.byIndex(_motionIndex);
+    final modeName = info != null ? '[${info.mode}]' : '[Custom]';
+    final motionName = info != null ? info.name : '—';
+    final motionDesc = info != null ? info.desc : '사용자 정의';
+
+    return Column(
       children: [
-        _spinBtn('−10', () => _changeMotion(-10)),
-        const SizedBox(width: 4),
-        _spinBtn('−', () => _changeMotion(-1)),
-        const SizedBox(width: 8),
-        Expanded(
-          child: Container(
-            height: 40,
-            decoration: BoxDecoration(
-              color: Colors.black.withValues(alpha: 0.25),
-              borderRadius: BorderRadius.circular(6),
-              border:
-                  Border.all(color: Colors.cyan.withValues(alpha: 0.4)),
-            ),
-            child: Center(
-              child: Text(
-                '$_motionIndex',
-                style: const TextStyle(
-                    color: Colors.cyanAccent,
-                    fontSize: 20,
-                    fontWeight: FontWeight.bold),
+        // 조작 행
+        Row(
+          children: [
+            _spinBtn('−10', () => _changeMotion(-10)),
+            const SizedBox(width: 4),
+            _spinBtn('−', () => _changeMotion(-1)),
+            const SizedBox(width: 8),
+            // 중앙 번호 크게
+            Expanded(
+              child: Container(
+                height: 64,
+                decoration: BoxDecoration(
+                  color: Colors.black.withValues(alpha: 0.35),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(
+                    color: Colors.cyanAccent.withValues(alpha: 0.6),
+                    width: 1.5,
+                  ),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.cyanAccent.withValues(alpha: 0.15),
+                      blurRadius: 8,
+                    ),
+                  ],
+                ),
+                child: Center(
+                  child: Text(
+                    '$_motionIndex',
+                    style: const TextStyle(
+                      color: Colors.cyanAccent,
+                      fontSize: 32,
+                      fontWeight: FontWeight.bold,
+                      fontFamily: 'monospace',
+                      letterSpacing: 2,
+                    ),
+                  ),
+                ),
               ),
             ),
+            const SizedBox(width: 8),
+            _spinBtn('+', () => _changeMotion(1)),
+            const SizedBox(width: 4),
+            _spinBtn('+10', () => _changeMotion(10)),
+          ],
+        ),
+        const SizedBox(height: 8),
+        // 모션 이름/설명 표시
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+          decoration: BoxDecoration(
+            color: Colors.cyan.withValues(alpha: 0.08),
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: Colors.cyan.withValues(alpha: 0.2),
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                child: Text(
+                  modeName,
+                  style: TextStyle(
+                    color: Colors.cyanAccent.withValues(alpha: 0.9),
+                    fontSize: 9,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  '$motionName  —  $motionDesc',
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w500,
+                  ),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            ],
           ),
         ),
-        const SizedBox(width: 8),
-        _spinBtn('+', () => _changeMotion(1)),
-        const SizedBox(width: 4),
-        _spinBtn('+10', () => _changeMotion(10)),
       ],
     );
   }

@@ -536,7 +536,7 @@ class _CameraPreviewWidgetState extends State<CameraPreviewWidget>
             ),
           ),
           const SizedBox(width: 7),
-          Text(on ? 'YOLO ON' : 'YOLO OFF',
+          Text(on ? '객체인식 ON' : '객체인식 OFF',
               style: TextStyle(
                 color: on ? Colors.greenAccent : Colors.white54,
                 fontSize: 11, fontWeight: FontWeight.bold,

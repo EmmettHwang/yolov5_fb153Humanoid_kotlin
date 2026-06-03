@@ -5,8 +5,10 @@ import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothSocket
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.os.Build
 import android.provider.Settings
@@ -28,6 +30,11 @@ import java.util.UUID
  * 연결 전략:
  *   1순위 — reflection createRfcommSocket(channel=1)  ← fb153 필수
  *   2순위 — createRfcommSocketToServiceRecord(SPP UUID) fallback
+ *
+ * 추가 기능:
+ *   - startDiscovery() : BroadcastReceiver 로 미페어링 기기 실시간 발견
+ *   - stopDiscovery()  : 검색 중지
+ *   - createBond()     : 페어링 요청
  */
 class BluetoothClassicPlugin(private val context: Context) :
     MethodChannel.MethodCallHandler, EventChannel.StreamHandler {
@@ -53,6 +60,10 @@ class BluetoothClassicPlugin(private val context: Context) :
     // ── EventChannel 싱크 (Flutter로 이벤트 전달) ─────────────────
     private var eventSink: EventChannel.EventSink? = null
 
+    // ── Discovery BroadcastReceiver ───────────────────────────────
+    private var discoveryReceiver: BroadcastReceiver? = null
+    private var isDiscoveryRegistered = false
+
     // ── EventChannel.StreamHandler ────────────────────────────────
     override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
         eventSink = events
@@ -72,6 +83,9 @@ class BluetoothClassicPlugin(private val context: Context) :
             "isConnected"           -> result.success(socket?.isConnected == true)
             "isBluetoothEnabled"    -> result.success(btAdapter?.isEnabled == true)
             "openBluetoothSettings" -> handleOpenBtSettings(result)
+            "startDiscovery"        -> handleStartDiscovery(result)
+            "stopDiscovery"         -> handleStopDiscovery(result)
+            "createBond"            -> handleCreateBond(call, result)
             else                    -> result.notImplemented()
         }
     }
@@ -96,6 +110,152 @@ class BluetoothClassicPlugin(private val context: Context) :
         }
     }
 
+    // ── startDiscovery ────────────────────────────────────────────
+    private fun handleStartDiscovery(result: MethodChannel.Result) {
+        if (!hasPermission(Manifest.permission.BLUETOOTH_SCAN)) {
+            result.error("PERMISSION_DENIED", "BLUETOOTH_SCAN 권한 없음", null)
+            return
+        }
+        // Android 11 이하: ACCESS_FINE_LOCATION 필요
+        if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.R) {
+            if (!hasPermission(Manifest.permission.ACCESS_FINE_LOCATION)) {
+                result.error("PERMISSION_DENIED", "ACCESS_FINE_LOCATION 권한 없음 (Android 11 이하 필요)", null)
+                return
+            }
+        }
+
+        // 기존 수신기 해제
+        unregisterDiscoveryReceiver()
+
+        discoveryReceiver = object : BroadcastReceiver() {
+            override fun onReceive(ctx: Context, intent: Intent) {
+                when (intent.action) {
+                    BluetoothDevice.ACTION_FOUND -> {
+                        val device: BluetoothDevice? =
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                                intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
+                            } else {
+                                @Suppress("DEPRECATION")
+                                intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
+                            }
+                        val rssi = intent.getShortExtra(BluetoothDevice.EXTRA_RSSI, 0).toInt()
+                        device?.let { d ->
+                            val name = try {
+                                if (hasPermission(Manifest.permission.BLUETOOTH_CONNECT)) {
+                                    d.name ?: "알 수 없는 기기"
+                                } else "알 수 없는 기기"
+                            } catch (_: Exception) { "알 수 없는 기기" }
+
+                            sendEvent(mapOf(
+                                "type"    to "device_found",
+                                "name"    to name,
+                                "address" to d.address,
+                                "rssi"    to rssi,
+                                "bonded"  to (d.bondState == BluetoothDevice.BOND_BONDED)
+                            ))
+                        }
+                    }
+                    BluetoothAdapter.ACTION_DISCOVERY_FINISHED -> {
+                        sendEvent(mapOf("type" to "discovery_finished"))
+                    }
+                    BluetoothAdapter.ACTION_DISCOVERY_STARTED -> {
+                        sendEvent(mapOf("type" to "discovery_started"))
+                    }
+                    BluetoothDevice.ACTION_BOND_STATE_CHANGED -> {
+                        val device: BluetoothDevice? =
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                                intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
+                            } else {
+                                @Suppress("DEPRECATION")
+                                intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
+                            }
+                        val bondState = intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE,
+                            BluetoothDevice.BOND_NONE)
+                        device?.let { d ->
+                            when (bondState) {
+                                BluetoothDevice.BOND_BONDED -> {
+                                    sendEvent(mapOf(
+                                        "type"    to "bond_success",
+                                        "address" to d.address
+                                    ))
+                                }
+                                BluetoothDevice.BOND_NONE -> {
+                                    sendEvent(mapOf(
+                                        "type"    to "bond_failed",
+                                        "address" to d.address
+                                    ))
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        val filter = IntentFilter().apply {
+            addAction(BluetoothDevice.ACTION_FOUND)
+            addAction(BluetoothAdapter.ACTION_DISCOVERY_FINISHED)
+            addAction(BluetoothAdapter.ACTION_DISCOVERY_STARTED)
+            addAction(BluetoothDevice.ACTION_BOND_STATE_CHANGED)
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            context.registerReceiver(discoveryReceiver, filter, Context.RECEIVER_EXPORTED)
+        } else {
+            context.registerReceiver(discoveryReceiver, filter)
+        }
+        isDiscoveryRegistered = true
+
+        // 기존 검색 중지 후 시작
+        btAdapter?.cancelDiscovery()
+        val started = btAdapter?.startDiscovery() == true
+        if (started) {
+            result.success(true)
+        } else {
+            unregisterDiscoveryReceiver()
+            result.error("DISCOVERY_FAILED", "startDiscovery() 실패 — BT 활성화 확인", null)
+        }
+    }
+
+    // ── stopDiscovery ─────────────────────────────────────────────
+    private fun handleStopDiscovery(result: MethodChannel.Result) {
+        btAdapter?.cancelDiscovery()
+        unregisterDiscoveryReceiver()
+        result.success(true)
+    }
+
+    // ── createBond (페어링 요청) ───────────────────────────────────
+    private fun handleCreateBond(call: MethodCall, result: MethodChannel.Result) {
+        val address = call.argument<String>("address")
+            ?: return result.error("INVALID_ARG", "address 누락", null)
+
+        if (!hasPermission(Manifest.permission.BLUETOOTH_CONNECT)) {
+            result.error("PERMISSION_DENIED", "BLUETOOTH_CONNECT 권한 없음", null)
+            return
+        }
+
+        try {
+            val device = btAdapter?.getRemoteDevice(address)
+                ?: return result.error("DEVICE_NOT_FOUND", "기기를 찾을 수 없음: $address", null)
+
+            when (device.bondState) {
+                BluetoothDevice.BOND_BONDED -> {
+                    // 이미 페어링됨 → 바로 연결
+                    result.success("already_bonded")
+                }
+                BluetoothDevice.BOND_BONDING -> {
+                    result.success("bonding")
+                }
+                else -> {
+                    val ok = device.createBond()
+                    result.success(if (ok) "bonding" else "failed")
+                }
+            }
+        } catch (e: Exception) {
+            result.error("BOND_FAILED", e.message, null)
+        }
+    }
+
     // ── connect ───────────────────────────────────────────────────
     private fun handleConnect(call: MethodCall, result: MethodChannel.Result) {
         val address = call.argument<String>("address")
@@ -108,7 +268,6 @@ class BluetoothClassicPlugin(private val context: Context) :
 
         Thread {
             try {
-                // 기존 연결 해제
                 closeConnection()
 
                 val device = btAdapter?.getRemoteDevice(address)
@@ -118,7 +277,7 @@ class BluetoothClassicPlugin(private val context: Context) :
 
                 // ── 1순위: reflection channel 1 ──────────────────
                 val sock = connectViaReflection(device)
-                    ?: connectViaUuid(device)   // ── 2순위: UUID SPP
+                    ?: connectViaUuid(device)
                     ?: throw IOException("채널1 reflection + UUID SPP 모두 실패")
 
                 socket       = sock
@@ -128,7 +287,6 @@ class BluetoothClassicPlugin(private val context: Context) :
                 sendEvent(mapOf("type" to "connected", "address" to address))
                 result.success(true)
 
-                // 수신 루프 시작
                 startReadLoop()
 
             } catch (e: Exception) {
@@ -217,6 +375,17 @@ class BluetoothClassicPlugin(private val context: Context) :
         socket       = null
     }
 
+    // ── Discovery receiver 해제 ───────────────────────────────────
+    private fun unregisterDiscoveryReceiver() {
+        if (isDiscoveryRegistered && discoveryReceiver != null) {
+            try {
+                context.unregisterReceiver(discoveryReceiver)
+            } catch (_: Exception) {}
+            isDiscoveryRegistered = false
+            discoveryReceiver = null
+        }
+    }
+
     // ── 이벤트 전달 (메인 스레드로 post) ──────────────────────────
     private fun sendEvent(data: Map<String, Any>) {
         android.os.Handler(android.os.Looper.getMainLooper()).post {
@@ -241,6 +410,8 @@ class BluetoothClassicPlugin(private val context: Context) :
     private fun hasPermission(permission: String): Boolean {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S &&
             permission == Manifest.permission.BLUETOOTH_CONNECT) return true
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S &&
+            permission == Manifest.permission.BLUETOOTH_SCAN) return true
         return ContextCompat.checkSelfPermission(context, permission) ==
             PackageManager.PERMISSION_GRANTED
     }
