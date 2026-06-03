@@ -169,9 +169,23 @@ class _SplashScreenState extends State<SplashScreen>
     }
 
     // 5. 마지막 기기 자동 재연결 시도
+    //    연결 시도 후 최대 4초 대기 → 성공/실패 상관없이 메인화면 진입
     if (mounted && btManager.lastMac != null) {
-      setState(() => _statusText = '마지막 로봇 재연결 시도 중...');
-      btManager.tryAutoReconnect();
+      setState(() => _statusText = '마지막 로봇 자동 연결 중...');
+      // await로 결과를 기다림 (최대 4초 타임아웃)
+      await btManager.tryAutoReconnect().timeout(
+        const Duration(seconds: 4),
+        onTimeout: () => false,
+      );
+      if (mounted) {
+        if (btManager.isConnected) {
+          setState(() => _statusText = '연결 성공!');
+          await Future.delayed(const Duration(milliseconds: 400));
+        } else {
+          setState(() => _statusText = '연결 실패 — 수동 연결 필요');
+          await Future.delayed(const Duration(milliseconds: 300));
+        }
+      }
     }
 
     // 6. 메인 화면으로 이동

@@ -52,9 +52,21 @@ class YoloDetectorService extends ChangeNotifier {
   bool                  _disposed     = false;
   bool                  _paused       = false;   // 동작 전송 중 추론 일시정지
 
-  // 프레임 throttle — 최대 6fps (모바일 성능 고려)
+  // 프레임 throttle — 주화면 60fps유지, 추론만 1fps (1000ms)
   DateTime?             _lastFrame;
-  static const int      _frameGapMs   = 160;
+  static const int      _frameGapMs   = 1000;  // 추론 1fps
+
+  // 커스텀 KNN 모드 지원
+  bool                  _useCustomKnn = false;
+  bool get              useCustomKnn  => _useCustomKnn;
+  List<String>          _knnClasses   = [];
+  List<String> get      knnClasses    => List.unmodifiable(_knnClasses);
+
+  // KNN 추론 콜백 (CustomVisionScreen의 _knn에서 제공)
+  Map<String,double>? Function(List<double>)? _knnInfer;
+  Map<String,double>? Function(List<double>)? get knnInferFn => _knnInfer;
+  List<double> Function(CameraImage)? _knnFeatureExtractor;
+  List<double> Function(CameraImage)? get knnFeatureFn => _knnFeatureExtractor;
 
   // ── 초기화 ────────────────────────────────────────────────────────────────
   Future<void> initialize() async {
@@ -259,6 +271,60 @@ class YoloDetectorService extends ChangeNotifier {
     _results = [];
     if (!_disposed) notifyListeners();
   }
+
+  // ── 커스텀 KNN 모드 설정 ─────────────────────────────────────────────────
+  /// KNN 학습 완료 후 호출 — 이후 processFrame은 KNN으로 추론
+  void setCustomKnnMode({
+    required List<String> classes,
+    required Map<String, double>? Function(List<double>) inferFn,
+    required List<double> Function(CameraImage) featureFn,
+  }) {
+    _knnClasses = List<String>.from(classes);
+    _knnInfer = inferFn;
+    _knnFeatureExtractor = featureFn;
+    _useCustomKnn = true;
+    debugPrint('[OD] 커스텀 KNN 모드 활성화: ${_knnClasses.length}개 클래스');
+    notifyListeners();
+  }
+
+  /// KNN 모드 해제 → YOLO SSD 복귀
+  void clearCustomKnnMode() {
+    _useCustomKnn = false;
+    _knnClasses = [];
+    _knnInfer = null;
+    _knnFeatureExtractor = null;
+    debugPrint('[OD] YOLO SSD 모드 복귀');
+    notifyListeners();
+  }
+
+  // ── KNN 결과 주입 (camera_preview_widget에서 호출) ──────────────────────
+  /// KNN 추론 결과를 DetectionResult로 변환하여 상태에 주입
+  void injectKnnResult(String label, double confidence, Size displaySize) {
+    if (_disposed) return;
+    _results = [
+      DetectionResult(
+        label: label,
+        confidence: confidence,
+        rect: Rect.fromLTWH(
+          displaySize.width * 0.05, displaySize.height * 0.05,
+          displaySize.width * 0.9, displaySize.height * 0.9,
+        ),
+      ),
+    ];
+    notifyListeners();
+  }
+
+  /// 1fps throttle 체크 — 외부에서 호출 전 확인용
+  bool shouldProcessFrame() {
+    if (_running || _paused) return false;
+    final now = DateTime.now();
+    if (_lastFrame != null &&
+        now.difference(_lastFrame!).inMilliseconds < _frameGapMs) return false;
+    _lastFrame = now;
+    return true;
+  }
+
+  void setRunning(bool v) => _running = v;
 
   @override
   void dispose() {

@@ -3,116 +3,110 @@ import 'bluetooth_manager.dart';
 
 /// 조이스틱 연속 패킷 전송
 ///
-/// 단일 모션: start(motionIndex) — 단일 모션 번호 반복 전송 (50ms)
-/// 시퀀스 모션: startSequence([2,3,4]) — 전진: 2(준비 1회) → 3(반복) → 4(마무리) → 루프
-///              startSequence([9,10,11]) — 후진: 9(준비 1회) → 10(반복) → 11(마무리) → 루프
+/// startSequence([2,3,4], delaysMs:[3,24,8]) — 전진
+///   2(3ms 홀드) → 3(24ms 홀드, 반복) → 4(8ms 홀드) → 3 → …
 ///
-/// 시퀀스 타이밍:
-///   - prepare(index 0): 한 번만 전송 → stepMs 후 loop 진입
-///   - loop  (index 1): repeatCount 회 반복 전송 (intervalMs 간격)
-///   - finish(index 2): 한 번만 전송 → stepMs 후 다시 loop 로 복귀
+/// startSequence([9,10,11], delaysMs:[3,24,8]) — 후진
+///   9 → 10(반복) → 11 → 10 → …
+///
+/// 각 전송 후 최소 20ms 딜레이, 실제 딜레이는 delaysMs[i] 중 큰 값 사용
 class MotionRepeater {
   final BluetoothManager _btManager;
-  Timer? _timer;
-  int _currentMotion = 0;
+
   bool _isRunning = false;
-
-  // 시퀀스 상태
-  List<int>? _sequence;
-  int _seqPhase = 0; // 0=prepare, 1=loop, 2=finish
-  int _loopCount = 0;
-  static const int _loopRepeat = 6; // loop 단계 반복 횟수
-  static const int _intervalMs = 300; // 각 스텝 간격 (ms)
-
   bool get isRunning => _isRunning;
+
+  int _currentMotion = 0;
   int get currentMotion => _currentMotion;
+
+  // 시퀀스 루프 상태 (async loop 방식)
+  List<int>? _sequence;
+  List<int>? _delaysMs;
+
+  static const int _minIntervalMs = 20; // 최소 명령 간격
 
   MotionRepeater(this._btManager);
 
-  // ─────────────────────────────────────────
-  // 단일 모션 반복 전송 (전진/후진 이외 방향)
-  // ─────────────────────────────────────────
-  void start(int motionIndex, {int intervalMs = 50}) {
+  // ─────────────────────────────────────────────────────────────
+  // 단일 모션 반복 (방향키: 좌/우/회전 등)
+  // ─────────────────────────────────────────────────────────────
+  void start(int motionIndex, {int intervalMs = 30}) {
     stop(sendReturn: false);
-    _sequence = null;
-    _currentMotion = motionIndex;
     _isRunning = true;
-
-    _btManager.sendMotion(motionIndex);
-
-    _timer = Timer.periodic(Duration(milliseconds: intervalMs), (_) {
-      if (_isRunning) {
-        _btManager.sendMotion(motionIndex);
-      }
-    });
+    _currentMotion = motionIndex;
+    _runSingle(motionIndex, intervalMs);
   }
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // 시퀀스 전송: [prep, loop, finish]
-  //   전진: [2, 3, 4]  — 2(준비) → 3반복×N → 4(마무리) → 3반복×N → 4 → …
-  //   후진: [9, 10, 11] — 9(준비) → 10반복×N → 11(마무리) → 10반복×N → 11 → …
-  // ─────────────────────────────────────────────────────────────────────────
-  void startSequence(List<int> sequence) {
-    assert(sequence.length == 3, 'sequence must have exactly 3 elements');
+  Future<void> _runSingle(int motionIndex, int intervalMs) async {
+    _btManager.sendMotion(motionIndex);
+    while (_isRunning && _currentMotion == motionIndex) {
+      final delay = intervalMs < _minIntervalMs ? _minIntervalMs : intervalMs;
+      await Future.delayed(Duration(milliseconds: delay));
+      if (_isRunning && _currentMotion == motionIndex) {
+        _btManager.sendMotion(motionIndex);
+      }
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // 시퀀스 전송: [prep, loop, finish] + 각 모션별 홀드 시간
+  //
+  // 전진 [2,3,4] delaysMs:[3,24,8]
+  //   ① motion 2 전송 → max(3, 20)ms 대기
+  //   ② motion 3 전송 → max(24, 20)ms 대기  ← 반복
+  //   ③ motion 4 전송 → max(8, 20)ms 대기
+  //   ② 로 복귀
+  //
+  // 후진 [9,10,11] delaysMs:[3,24,8]
+  //   동일 구조
+  // ─────────────────────────────────────────────────────────────
+  void startSequence(List<int> sequence, {List<int>? delaysMs}) {
+    assert(sequence.length == 3, 'sequence must have 3 elements');
     stop(sendReturn: false);
 
     _sequence = List<int>.from(sequence);
-    _seqPhase = 0;   // 0=prepare
-    _loopCount = 0;
+    _delaysMs = delaysMs != null && delaysMs.length == 3
+        ? List<int>.from(delaysMs)
+        : [20, 20, 20];
     _isRunning = true;
     _currentMotion = sequence[0];
 
-    // Phase 0: 준비 동작 1회 즉시 전송
-    _btManager.sendMotion(_sequence![0]);
-
-    // 타이머로 나머지 시퀀스 진행
-    _timer = Timer.periodic(const Duration(milliseconds: _intervalMs), _sequenceTick);
+    _runSequenceLoop();
   }
 
-  void _sequenceTick(Timer timer) {
-    if (!_isRunning || _sequence == null) {
-      timer.cancel();
-      return;
-    }
+  Future<void> _runSequenceLoop() async {
+    final seq = _sequence!;
+    final dels = _delaysMs!;
 
-    switch (_seqPhase) {
-      case 0: // prepare 전송 완료 → loop 진입
-        _seqPhase = 1;
-        _loopCount = 0;
-        _currentMotion = _sequence![1];
-        _btManager.sendMotion(_sequence![1]);
+    // ① prepare (1회)
+    _currentMotion = seq[0];
+    _btManager.sendMotion(seq[0]);
+    await Future.delayed(Duration(
+        milliseconds: dels[0] < _minIntervalMs ? _minIntervalMs : dels[0]));
 
-      case 1: // loop 반복
-        _loopCount++;
-        if (_loopCount >= _loopRepeat) {
-          // loop 충분히 반복 → finish 전송
-          _seqPhase = 2;
-          _loopCount = 0;
-          _currentMotion = _sequence![2];
-          _btManager.sendMotion(_sequence![2]);
-        } else {
-          _btManager.sendMotion(_sequence![1]);
-        }
+    // ② loop/finish 반복
+    while (_isRunning) {
+      // loop motion
+      _currentMotion = seq[1];
+      _btManager.sendMotion(seq[1]);
+      await Future.delayed(Duration(
+          milliseconds: dels[1] < _minIntervalMs ? _minIntervalMs : dels[1]));
+      if (!_isRunning) break;
 
-      case 2: // finish 전송 완료 → 다시 loop 로 복귀 (준비는 첫 번만)
-        _seqPhase = 1;
-        _loopCount = 0;
-        _currentMotion = _sequence![1];
-        _btManager.sendMotion(_sequence![1]);
+      // finish motion
+      _currentMotion = seq[2];
+      _btManager.sendMotion(seq[2]);
+      await Future.delayed(Duration(
+          milliseconds: dels[2] < _minIntervalMs ? _minIntervalMs : dels[2]));
     }
   }
 
-  // ─────────────────────────────────────────
-  // 반복 전송 중단
-  // ─────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────────
   void stop({bool sendReturn = true, int returnMotion = 1}) {
-    _timer?.cancel();
-    _timer = null;
     _isRunning = false;
     _currentMotion = 0;
     _sequence = null;
-    _seqPhase = 0;
-    _loopCount = 0;
+    _delaysMs = null;
 
     if (sendReturn && _btManager.isConnected) {
       _btManager.sendMotion(returnMotion);

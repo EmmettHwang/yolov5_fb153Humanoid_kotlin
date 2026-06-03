@@ -82,18 +82,24 @@ class ActionButtonConfig {
     );
   }
 
-  /// 기본 버튼 설정 (1~9)
+  /// 기본 버튼 설정 (1~15)
   static List<ActionButtonConfig> defaults() {
     final defaults = [
-      (id: 1, label: '인사', motion: 19, color: 0xFF6200EE),
-      (id: 2, label: '손흔들기', motion: 18, color: 0xFF03DAC6),
-      (id: 3, label: '커스텀1', motion: 20, color: 0xFFFF5722),
-      (id: 4, label: '커스텀2', motion: 21, color: 0xFF2196F3),
-      (id: 5, label: '커스텀3', motion: 22, color: 0xFF4CAF50),
-      (id: 6, label: '커스텀4', motion: 23, color: 0xFFFF9800),
-      (id: 7, label: '커스텀5', motion: 24, color: 0xFF9C27B0),
-      (id: 8, label: '커스텀6', motion: 25, color: 0xFF00BCD4),
-      (id: 9, label: '복귀', motion: 1, color: 0xFFF44336),
+      (id:  1, label: '인사',    motion: 19, color: 0xFF6200EE),
+      (id:  2, label: '손흔들기', motion: 18, color: 0xFF03DAC6),
+      (id:  3, label: '커스텀1', motion: 20, color: 0xFFFF5722),
+      (id:  4, label: '커스텀2', motion: 21, color: 0xFF2196F3),
+      (id:  5, label: '커스텀3', motion: 22, color: 0xFF4CAF50),
+      (id:  6, label: '커스텀4', motion: 23, color: 0xFFFF9800),
+      (id:  7, label: '커스텀5', motion: 24, color: 0xFF9C27B0),
+      (id:  8, label: '커스텀6', motion: 25, color: 0xFF00BCD4),
+      (id:  9, label: '복귀',   motion:  1, color: 0xFFF44336),
+      (id: 10, label: '버튼10', motion: 26, color: 0xFF607D8B),
+      (id: 11, label: '버튼11', motion: 27, color: 0xFF795548),
+      (id: 12, label: '버튼12', motion: 28, color: 0xFF009688),
+      (id: 13, label: '버튼13', motion: 29, color: 0xFF8BC34A),
+      (id: 14, label: '버튼14', motion: 30, color: 0xFFE91E63),
+      (id: 15, label: '버튼15', motion: 31, color: 0xFF673AB7),
     ];
 
     return defaults

@@ -41,12 +41,15 @@ class CameraPreviewWidget extends StatefulWidget {
 }
 
 class _CameraPreviewWidgetState extends State<CameraPreviewWidget>
-    with TickerProviderStateMixin {
+    with TickerProviderStateMixin, WidgetsBindingObserver {
   // ── 카메라 ───────────────────────────────────────────────────
   CameraController? _ctrl;
   bool _cameraReady     = false;
   bool _permDenied      = false;
   String? _cameraError;
+
+  // ── 앱 라이프사이클 / 복귀 감지 ─────────────────────────────
+  bool _reinitPending = false;
 
   // ── YOLO 서비스 ─────────────────────────────────────────────
   YoloDetectorService? _internalSvc;
@@ -69,6 +72,7 @@ class _CameraPreviewWidgetState extends State<CameraPreviewWidget>
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _prevYolo = widget.isYoloActive;
 
     _glowCtrl = AnimationController(vsync: this,
@@ -83,6 +87,95 @@ class _CameraPreviewWidgetState extends State<CameraPreviewWidget>
 
     _svc.addListener(_onSvcChanged);
     _initCamera();
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // 앱 라이프사이클 감지 — resumed 시 카메라 재초기화
+  // CustomVisionScreen 등 다른 화면에서 카메라 사용 후
+  // 메인 화면으로 복귀할 때 카메라가 동작하지 않는 문제 해결
+  // ─────────────────────────────────────────────────────────────
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (!mounted) return;
+
+    switch (state) {
+      case AppLifecycleState.inactive:
+      case AppLifecycleState.paused:
+        // 화면이 비활성화되면 카메라 스트림 중지 (리소스 해제)
+        _pauseCamera();
+
+      case AppLifecycleState.resumed:
+        // 앱 복귀 시 카메라 재초기화
+        if (_reinitPending || !_cameraReady || _ctrl == null ||
+            !_ctrl!.value.isInitialized) {
+          _reinitPending = false;
+          _reinitCamera();
+        }
+
+      case AppLifecycleState.detached:
+      case AppLifecycleState.hidden:
+        break;
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // 라우트 복귀 감지 — didChangeDependencies에서 RouteObserver 없이
+  // Navigator.pop 후 복귀를 감지하기 위해 WidgetsBindingObserver 활용
+  // ─────────────────────────────────────────────────────────────
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // ModalRoute가 다시 현재 라우트가 되었을 때 카메라 재확인
+    final route = ModalRoute.of(context);
+    if (route != null && route.isCurrent) {
+      // 카메라가 무효화된 경우 재초기화
+      if (_cameraReady && (_ctrl == null || !_ctrl!.value.isInitialized)) {
+        _reinitCamera();
+      }
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // 카메라 일시 중지 (화면 비활성화 시)
+  // ─────────────────────────────────────────────────────────────
+  Future<void> _pauseCamera() async {
+    if (_ctrl == null || !_ctrl!.value.isInitialized) return;
+    try {
+      if (_ctrl!.value.isStreamingImages) {
+        await _ctrl!.stopImageStream();
+        _streaming = false;
+      }
+    } catch (e) {
+      debugPrint('[Cam] pauseCamera 오류: $e');
+    }
+    _reinitPending = true;
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // 카메라 재초기화 — 기존 controller 해제 후 새로 생성
+  // ─────────────────────────────────────────────────────────────
+  Future<void> _reinitCamera() async {
+    if (!mounted) return;
+    debugPrint('[Cam] 카메라 재초기화 시작');
+
+    // 기존 컨트롤러 정리
+    final oldCtrl = _ctrl;
+    _ctrl = null;
+    _streaming = false;
+    if (mounted) setState(() => _cameraReady = false);
+
+    try {
+      if (oldCtrl != null) {
+        if (oldCtrl.value.isStreamingImages) {
+          await oldCtrl.stopImageStream().catchError((_) {});
+        }
+        await oldCtrl.dispose().catchError((_) {});
+      }
+    } catch (_) {}
+
+    // 잠깐 대기 후 재초기화 (Android에서 카메라 반환 시간 필요)
+    await Future.delayed(const Duration(milliseconds: 300));
+    if (mounted) await _initCamera();
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -107,22 +200,33 @@ class _CameraPreviewWidgetState extends State<CameraPreviewWidget>
         orElse: () => cameras.first,
       );
 
-      _ctrl = CameraController(
+      final ctrl = CameraController(
         cam,
         ResolutionPreset.medium, // 약 640×480
         enableAudio: false,
         imageFormatGroup: ImageFormatGroup.yuv420,
       );
-      await _ctrl!.initialize();
+      await ctrl.initialize();
 
-      if (!mounted) return;
-      setState(() => _cameraReady = true);
+      if (!mounted) {
+        await ctrl.dispose();
+        return;
+      }
+
+      _ctrl = ctrl;
+      setState(() {
+        _cameraReady = true;
+        _cameraError = null;
+      });
+
+      debugPrint('[Cam] 카메라 초기화 완료');
 
       // initState 때 이미 YOLO ON이면 바로 시작
       if (widget.isYoloActive) _startYolo();
 
     } catch (e) {
       if (mounted) setState(() => _cameraError = '카메라 오류: $e');
+      debugPrint('[Cam] 초기화 오류: $e');
     }
   }
 
@@ -177,15 +281,48 @@ class _CameraPreviewWidgetState extends State<CameraPreviewWidget>
   }
 
   // ─────────────────────────────────────────────────────────────
-  // 카메라 프레임 콜백
+  // 카메라 프레임 콜백 — 프리뷰는 항상 60fps, 추론만 1fps 제한
   // ─────────────────────────────────────────────────────────────
   void _onFrame(CameraImage image) {
     if (_svc.modelState != YoloModelState.ready) return;
+    if (!_svc.shouldProcessFrame()) return; // 1fps throttle
 
     final box = context.findRenderObject() as RenderBox?;
     final size = box?.size ?? const Size(360, 240);
 
-    _svc.processFrame(image, size);
+    if (_svc.useCustomKnn && _svc.knnClasses.isNotEmpty) {
+      // 커스텀 KNN 모드: 특징 추출 → KNN 추론
+      _runKnnInference(image, size);
+    } else {
+      // 기본 YOLO SSD 모드
+      _svc.processFrame(image, size);
+    }
+  }
+
+  void _runKnnInference(CameraImage image, Size displaySize) {
+    // shouldProcessFrame()이 이미 통과했으므로 바로 추론
+    _svc.setRunning(true);
+    final sw = Stopwatch()..start();
+    try {
+      // 메인 스레드에서 간단히 처리 (1fps라 부하 낮음)
+      final knnInfer = _svc.knnInferFn;
+      final featureFn = _svc.knnFeatureFn;
+      if (knnInfer == null || featureFn == null) {
+        _svc.setRunning(false);
+        return;
+      }
+      final features = featureFn(image);
+      final result = knnInfer(features);
+      sw.stop();
+      if (result != null) {
+        final best = result.entries.reduce((a, b) => a.value > b.value ? a : b);
+        _svc.injectKnnResult(best.key, best.value, displaySize);
+      }
+    } catch (e) {
+      debugPrint('[Cam] KNN 추론 오류: $e');
+    } finally {
+      _svc.setRunning(false);
+    }
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -220,11 +357,23 @@ class _CameraPreviewWidgetState extends State<CameraPreviewWidget>
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _glowCtrl.dispose();
     _pulseCtrl.dispose();
     _svc.removeListener(_onSvcChanged);
     _internalSvc?.dispose();
-    _ctrl?.dispose();
+    // 스트림 먼저 중지 후 dispose
+    if (_ctrl != null) {
+      final ctrl = _ctrl!;
+      _ctrl = null;
+      if (ctrl.value.isStreamingImages) {
+        ctrl.stopImageStream().then((_) => ctrl.dispose()).catchError((_) {
+          ctrl.dispose().catchError((_) {});
+        });
+      } else {
+        ctrl.dispose().catchError((_) {});
+      }
+    }
     super.dispose();
   }
 
@@ -293,7 +442,7 @@ class _CameraPreviewWidgetState extends State<CameraPreviewWidget>
       return _placeholder(icon: Icons.error_outline,
           title: '카메라 오류', sub: _cameraError!, color: Colors.redAccent);
     }
-    if (!_cameraReady || _ctrl == null) {
+    if (!_cameraReady || _ctrl == null || !_ctrl!.value.isInitialized) {
       return _placeholder(icon: Icons.videocam,
           title: '카메라 초기화 중...', spinner: true);
     }

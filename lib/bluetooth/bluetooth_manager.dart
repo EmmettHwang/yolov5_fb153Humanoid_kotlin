@@ -338,8 +338,25 @@ class BluetoothManager extends ChangeNotifier {
 
     final prefs = await SharedPreferences.getInstance();
     final lastName = prefs.getString(_prefKeyLastName) ?? 'fb153 로봇';
+    debugPrint('[BT] 자동연결 시도: $lastName [$_lastMac]');
+
     await connect(BluetoothDeviceInfo(name: lastName, address: _lastMac!));
-    if (isConnected) _reconnectAttempts = 0;
+
+    // 네이티브 'connected' 이벤트가 비동기로 오므로 최대 3초 대기
+    if (!isConnected) {
+      for (int i = 0; i < 30; i++) {
+        await Future.delayed(const Duration(milliseconds: 100));
+        if (isConnected) break;
+        if (_connectionState == BtConnectionState.error) break;
+      }
+    }
+
+    if (isConnected) {
+      _reconnectAttempts = 0;
+      debugPrint('[BT] 자동연결 성공: $lastName');
+    } else {
+      debugPrint('[BT] 자동연결 실패: $lastName');
+    }
     return isConnected;
   }
 
@@ -506,6 +523,44 @@ class BluetoothManager extends ChangeNotifier {
     final packet = PacketBuilder.build(motionIndex);
     if (kDebugMode) {
       debugPrint('TX 모션 $motionIndex → ${PacketBuilder.toHexString(packet)}');
+    }
+    return sendPacket(packet);
+  }
+
+  /// LED 제어 패킷 전송
+  /// [motorId] 18=머리, 17=허리 (PacketBuilder.motorIdHead/Waist)
+  /// [r][g][b] RGB 0~255
+  Future<bool> sendLed({
+    int motorId = PacketBuilder.motorIdHead,
+    int r = 0,
+    int g = 0,
+    int b = 0,
+  }) async {
+    final packet = PacketBuilder.buildLed(motorId: motorId, r: r, g: g, b: b);
+    if (kDebugMode) {
+      debugPrint('TX LED($motorId) R=$r G=$g B=$b → ${PacketBuilder.toHexString(packet)}');
+    }
+    return sendPacket(packet);
+  }
+
+  /// LED OFF
+  Future<bool> sendLedOff({int motorId = PacketBuilder.motorIdHead}) =>
+      sendLed(motorId: motorId);
+
+  /// 포지션 제어 패킷 전송
+  /// [motorId] 모터 ID, [torquePercent] 0~100, [position] -32768~32767
+  Future<bool> sendPosition({
+    int motorId = PacketBuilder.motorIdHead,
+    int torquePercent = 80,
+    int position = 0,
+  }) async {
+    final packet = PacketBuilder.buildPosition(
+      motorId: motorId,
+      torquePercent: torquePercent,
+      position: position,
+    );
+    if (kDebugMode) {
+      debugPrint('TX POS($motorId) torq=$torquePercent pos=$position → ${PacketBuilder.toHexString(packet)}');
     }
     return sendPacket(packet);
   }

@@ -7,13 +7,15 @@ import '../../services/audio_service.dart';
 import '../settings/button_editor_dialog.dart';
 import 'package:provider/provider.dart';
 
-/// 3x3 액션 버튼 패널
+/// 액션 버튼 패널 (3×3=9 또는 3×5=15)
 class ActionButtonPanel extends StatelessWidget {
   final void Function(ActionButtonConfig config)? onButtonPressed;
+  final int buttonCount;
 
   const ActionButtonPanel({
     super.key,
     this.onButtonPressed,
+    this.buttonCount = 9,
   });
 
   @override
@@ -50,17 +52,17 @@ class ActionButtonPanel extends StatelessWidget {
             ],
           ),
         ),
-        // 3x3 그리드
+        // 3xN 그리드
         Expanded(
           child: GridView.builder(
             padding: const EdgeInsets.all(4),
-            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+            gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
               crossAxisCount: 3,
-              crossAxisSpacing: 6,
-              mainAxisSpacing: 6,
-              childAspectRatio: 1.0,
+              crossAxisSpacing: 4,
+              mainAxisSpacing: 4,
+              childAspectRatio: buttonCount > 9 ? 1.4 : 1.0,
             ),
-            itemCount: 9,
+            itemCount: buttonCount,
             physics: const NeverScrollableScrollPhysics(),
             itemBuilder: (context, index) {
               final config = cmdManager.getConfig(index + 1);

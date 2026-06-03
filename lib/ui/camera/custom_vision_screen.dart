@@ -9,6 +9,7 @@ import 'package:image/image.dart' as img;
 import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:tflite_flutter/tflite_flutter.dart';
+import '../../services/yolo_detector_service.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
 /// CustomVisionScreen
@@ -18,15 +19,19 @@ import 'package:tflite_flutter/tflite_flutter.dart';
 /// 온디바이스 학습 및 실시간 추론을 수행합니다.
 ///
 /// 구조:
-///   1) [수집] 탭  — 카메라로 클래스별 샘플 이미지 수집
+///   1) [수집] 탭  — imageStream 기반 실시간 프레임 수집 (0.5초 간격, 진행바)
 ///   2) [학습] 탭  — KNN 분류기 학습 + 저장
-///   3) [인식] 탭  — 실시간 추론 결과 표시
+///   3) [인식] 탭  — imageStream 기반 실시간 추론
+///
+/// 카메라 반환:
+///   dispose()에서 스트림 중지 → controller dispose 순서를 안전하게 처리
+///   메인 화면의 CameraPreviewWidget은 WidgetsBindingObserver로 복귀 시 재초기화
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ── 샘플 데이터 ───────────────────────────────────────────────────────────────
 class _Sample {
   final String label;
-  final List<double> features; // MobileNet 1024-dim feature vector
+  final List<double> features; // 특징 벡터 (1024-dim)
   _Sample({required this.label, required this.features});
 }
 
@@ -69,8 +74,7 @@ class _KnnClassifier {
     final totalWeight = votes.values.fold(0.0, (a, b) => a + b);
     if (totalWeight <= 0) return null;
 
-    return votes
-        .map((k, v) => MapEntry(k, v / totalWeight));
+    return votes.map((k, v) => MapEntry(k, v / totalWeight));
   }
 
   int get sampleCount => _samples.length;
@@ -102,7 +106,8 @@ class _KnnClassifier {
 // CustomVisionScreen Widget
 // ─────────────────────────────────────────────────────────────────────────────
 class CustomVisionScreen extends StatefulWidget {
-  const CustomVisionScreen({super.key});
+  final YoloDetectorService? yoloService;
+  const CustomVisionScreen({super.key, this.yoloService});
 
   @override
   State<CustomVisionScreen> createState() => _CustomVisionScreenState();
@@ -117,35 +122,42 @@ class _CustomVisionScreenState extends State<CustomVisionScreen>
   CameraController? _camCtrl;
   bool _cameraReady = false;
   bool _permDenied  = false;
+  bool _cameraDisposing = false; // dispose 중 플래그
 
   // ── TFLite MobileNet 특징 추출기 ─────────────────────────────
   Interpreter? _interpreter;
-  // ignore: unused_field
   bool _modelLoaded = false;
-  static const int _inputSize = 224;
-  static const int _featureDim = 1024; // MobileNet V1 avgpool output
 
   // ── 클래스 관리 ───────────────────────────────────────────────
-  List<String> _classes = [];      // 클래스 이름 목록
-  String? _selectedClass;          // 현재 수집 중인 클래스
-  Map<String, int> _sampleCounts = {}; // 클래스별 샘플 수
+  List<String> _classes = [];
+  String? _selectedClass;
+  Map<String, int> _sampleCounts = {};
 
   // ── KNN 분류기 ────────────────────────────────────────────────
   final _knn = _KnnClassifier();
   bool _trained = false;
 
-  // ── 실시간 추론 ───────────────────────────────────────────────
-  bool _inferring = false;
+  // ── imageStream 기반 수집 ────────────────────────────────────
+  bool _isCapturing = false;
+  int _captureCount = 0;
+  // Epoch당 수집 목표: 기본 200장 (권장)
+  int _captureTarget = 200;
+  // Epoch(반복 수집 횟수): 기본 1 → 총 수집 = epoch × captureTarget
+  int _epochCount = 1;
+  // _captureTargetDefault: 향후 확장용 (현재 미사용)
+  static const int _captureTargetMin = 20;
+  bool _frameProcessing = false;
+  DateTime? _lastCaptureTime;
+  static const _captureInterval = Duration(milliseconds: 500);
+
+  // ── imageStream 기반 추론 ────────────────────────────────────
+  bool _streamInference = false;
+  bool _inferProcessing = false;
   String? _inferLabel;
   double _inferConf = 0;
   Map<String, double>? _allConf;
-  bool _streamInference = false;
-  Timer? _inferTimer;
-
-  // ── UI 상태 ───────────────────────────────────────────────────
-  bool _isCapturing = false;
-  int _captureCount = 0;
-  static const int _captureTarget = 20; // 연속 캡처 목표
+  DateTime? _lastInferTime;
+  static const _inferInterval = Duration(milliseconds: 600);
 
   static const String _prefKey = 'custom_vision_knn_v2';
 
@@ -154,24 +166,152 @@ class _CustomVisionScreenState extends State<CustomVisionScreen>
     super.initState();
     _tabCtrl = TabController(length: 3, vsync: this);
     _tabCtrl.addListener(() {
-      if (_tabCtrl.index == 2 && _trained) {
-        _startStreamInference();
-      } else {
-        _stopStreamInference();
+      if (!_tabCtrl.indexIsChanging) {
+        _onTabChanged(_tabCtrl.index);
       }
-      setState(() {});
     });
     _initCamera();
     _loadModel();
     _loadKnn();
   }
 
+  void _onTabChanged(int index) {
+    if (index == 2 && _trained) {
+      // 인식 탭으로 이동 시 스트림 추론 시작
+      _startStreamForInference();
+    } else if (index != 0) {
+      // 수집 탭이 아니면 수집 스트림 중지
+      _stopCapture();
+    }
+    if (index != 2) {
+      // 인식 탭이 아니면 추론 스트림 중지
+      _stopInferenceStream();
+    }
+    setState(() {});
+  }
+
+  // ── Epoch & 샘플 수 제어 위젯 ───────────────────────────────────
+  Widget _buildEpochControl() {
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.04),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.12)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // 샘플 수 슬라이더
+          Row(
+            children: [
+              const Icon(Icons.photo_library, color: Colors.cyanAccent, size: 14),
+              const SizedBox(width: 6),
+              Text(
+                '샘플 수: $_captureTarget장',
+                style: const TextStyle(
+                    color: Colors.white, fontSize: 12, fontWeight: FontWeight.w600),
+              ),
+              const Spacer(),
+              if (_captureTarget < 200)
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: Colors.amber.withValues(alpha: 0.2),
+                    borderRadius: BorderRadius.circular(4),
+                    border: Border.all(color: Colors.amber.withValues(alpha: 0.5)),
+                  ),
+                  child: const Text(
+                    '200장 권장',
+                    style: TextStyle(color: Colors.amber, fontSize: 9),
+                  ),
+                ),
+            ],
+          ),
+          Slider(
+            value: _captureTarget.toDouble(),
+            min: _captureTargetMin.toDouble(),
+            max: 500,
+            divisions: 24,
+            label: '$_captureTarget',
+            onChanged: (v) => setState(() => _captureTarget = v.round()),
+          ),
+          // Epoch 슬라이더
+          Row(
+            children: [
+              const Icon(Icons.repeat, color: Colors.purpleAccent, size: 14),
+              const SizedBox(width: 6),
+              Text(
+                'Epoch: $_epochCount회',
+                style: const TextStyle(
+                    color: Colors.white, fontSize: 12, fontWeight: FontWeight.w600),
+              ),
+              const Spacer(),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: Colors.cyanAccent.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                child: Text(
+                  '총 ${_captureTarget * _epochCount}장',
+                  style: const TextStyle(
+                      color: Colors.cyanAccent, fontSize: 10, fontWeight: FontWeight.bold),
+                ),
+              ),
+            ],
+          ),
+          Slider(
+            value: _epochCount.toDouble(),
+            min: 1,
+            max: 10,
+            divisions: 9,
+            label: '$_epochCount',
+            activeColor: Colors.purpleAccent,
+            onChanged: (v) => setState(() => _epochCount = v.round()),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ── 안전한 카메라 dispose ─────────────────────────────────────
+  // 중요: 스트림 중지 후 → dispose 순서 보장
+  Future<void> _safeDisposeCamera() async {
+    if (_cameraDisposing) return;
+    _cameraDisposing = true;
+
+    final ctrl = _camCtrl;
+    _camCtrl = null;
+    _cameraReady = false;
+
+    if (ctrl == null) {
+      _cameraDisposing = false;
+      return;
+    }
+
+    try {
+      if (ctrl.value.isInitialized && ctrl.value.isStreamingImages) {
+        await ctrl.stopImageStream();
+        await Future.delayed(const Duration(milliseconds: 100));
+      }
+      await ctrl.dispose();
+      debugPrint('[Vision] 카메라 안전 dispose 완료');
+    } catch (e) {
+      debugPrint('[Vision] 카메라 dispose 오류 (무시): $e');
+    } finally {
+      _cameraDisposing = false;
+    }
+  }
+
   @override
   void dispose() {
     _tabCtrl.dispose();
-    _inferTimer?.cancel();
-    _camCtrl?.dispose();
+    _isCapturing = false;
+    _streamInference = false;
     _interpreter?.close();
+    // 카메라 비동기 정리 (화면 닫힌 후 완료됨 — 메인화면 복귀 전 완료 보장)
+    _safeDisposeCamera();
     super.dispose();
   }
 
@@ -179,7 +319,7 @@ class _CustomVisionScreenState extends State<CustomVisionScreen>
   Future<void> _initCamera() async {
     final status = await Permission.camera.request();
     if (!status.isGranted) {
-      setState(() => _permDenied = true);
+      if (mounted) setState(() => _permDenied = true);
       return;
     }
 
@@ -191,14 +331,23 @@ class _CustomVisionScreenState extends State<CustomVisionScreen>
         orElse: () => cameras.first,
       );
 
-      _camCtrl = CameraController(
+      final ctrl = CameraController(
         cam,
         ResolutionPreset.medium,
         enableAudio: false,
         imageFormatGroup: ImageFormatGroup.yuv420,
       );
-      await _camCtrl!.initialize();
+      await ctrl.initialize();
+
+      if (!mounted) {
+        await ctrl.dispose();
+        return;
+      }
+
+      _camCtrl = ctrl;
       if (mounted) setState(() => _cameraReady = true);
+      debugPrint('[Vision] 카메라 초기화 완료');
+
     } catch (e) {
       if (kDebugMode) debugPrint('[Vision] 카메라 초기화 오류: $e');
     }
@@ -210,13 +359,11 @@ class _CustomVisionScreenState extends State<CustomVisionScreen>
       _interpreter = await Interpreter.fromAsset(
         'assets/models/detect.tflite',
       );
-      // MobileNet SSD 모델을 특징 추출에 재사용
-      setState(() => _modelLoaded = true);
+      if (mounted) setState(() => _modelLoaded = true);
       if (kDebugMode) debugPrint('[Vision] 모델 로드 성공');
     } catch (e) {
       if (kDebugMode) debugPrint('[Vision] 모델 로드 오류: $e');
-      // 모델 없어도 앱 동작: 더미 피처 사용
-      setState(() => _modelLoaded = false);
+      if (mounted) setState(() => _modelLoaded = false);
     }
   }
 
@@ -228,7 +375,6 @@ class _CustomVisionScreenState extends State<CustomVisionScreen>
       if (json != null) {
         final map = jsonDecode(json) as Map<String, dynamic>;
         _knn.fromJson(map);
-        // 클래스 목록 복원
         final labels = <String>{};
         for (final s in _knn._samples) {
           labels.add(s.label);
@@ -240,9 +386,6 @@ class _CustomVisionScreenState extends State<CustomVisionScreen>
         }
         if (_knn.sampleCount > 0) _trained = true;
         if (mounted) setState(() {});
-        if (kDebugMode) {
-          debugPrint('[Vision] KNN 로드: ${_knn.sampleCount}개 샘플');
-        }
       }
     } catch (e) {
       if (kDebugMode) debugPrint('[Vision] KNN 로드 오류: $e');
@@ -259,59 +402,170 @@ class _CustomVisionScreenState extends State<CustomVisionScreen>
     }
   }
 
-  // ── 특징 벡터 추출 ────────────────────────────────────────────
-  // ignore: unused_element
-  Future<List<double>> _extractFeatures(CameraImage image) async {
-    if (_interpreter == null) {
-      // 모델 없을 때 랜덤 특징 (테스트용)
-      return List.generate(_featureDim, (_) => math.Random().nextDouble());
-    }
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  // imageStream 기반 샘플 수집
+  // takePicture() 루프 방식의 문제:
+  //   - takePicture() 자체가 너무 빠르게 완료되어 실제 다른 장면을 캡처 못 함
+  //   - 프레임 간 시간 제어 불가
+  // imageStream 방식의 장점:
+  //   - 실시간 카메라 프레임을 0.5초 간격으로 안정적으로 캡처
+  //   - 카메라 셔터 동작 없이 부드럽게 수집
+  //   - 진행바가 실제 프레임 수집에 동기화됨
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+  Future<void> _startCapture() async {
+    if (_selectedClass == null || !_cameraReady || _isCapturing) return;
+    if (_camCtrl == null || !_camCtrl!.value.isInitialized) return;
+
+    setState(() {
+      _isCapturing = true;
+      _captureCount = 0;
+    });
+
+    _lastCaptureTime = null;
+    _frameProcessing = false;
+
+    // imageStream 시작
     try {
-      // YUV → RGB 변환
-      final imgObj = _convertYuv420ToImage(image);
-      final resized = img.copyResize(imgObj,
-          width: _inputSize, height: _inputSize);
-
-      // 입력 텐서 준비 [1, 224, 224, 3]
-      final inputBytes = Float32List(_inputSize * _inputSize * 3);
-      var idx = 0;
-      for (int y = 0; y < _inputSize; y++) {
-        for (int x = 0; x < _inputSize; x++) {
-          final pixel = resized.getPixel(x, y);
-          inputBytes[idx++] = (pixel.r / 255.0) * 2 - 1; // -1~1
-          inputBytes[idx++] = (pixel.g / 255.0) * 2 - 1;
-          inputBytes[idx++] = (pixel.b / 255.0) * 2 - 1;
-        }
+      if (!_camCtrl!.value.isStreamingImages) {
+        await _camCtrl!.startImageStream(_onCaptureFrame);
+        debugPrint('[Vision] 수집 스트림 시작: $_selectedClass, 목표: $_captureTarget장');
       }
-
-      // ignore: unused_local_variable
-      final input = inputBytes.reshape([1, _inputSize, _inputSize, 3]);
-
-      // 출력 텐서 (SSD MobileNet: 4개 출력)
-      // 특징 추출을 위해 첫 번째 출력 텐서 사용
-      // 실제 MobileNet SSD 모델은 locations / classes / scores / count 4개 출력
-      // 특징 벡터를 위해 flatten된 내부 레이어 값 사용
-      // 여기서는 입력 이미지의 픽셀 통계를 특징으로 사용 (모델 미지원 시 폴백)
-      final features = _extractImageFeatures(resized);
-      return features;
-
     } catch (e) {
-      if (kDebugMode) debugPrint('[Vision] 특징 추출 오류: $e');
-      return _extractFromCameraImageDirectly(image);
+      debugPrint('[Vision] 수집 스트림 시작 오류: $e');
+      if (mounted) setState(() => _isCapturing = false);
     }
   }
 
-  /// 이미지에서 색상/밝기 기반 특징 추출 (256-dim 히스토그램 기반)
-  List<double> _extractImageFeatures(img.Image image) {
-    // RGB 채널별 64-bin 히스토그램 + 4개 영역의 평균/분산 = 6*64 = 384dim
-    const bins = 64;
+  void _onCaptureFrame(CameraImage image) {
+    if (!_isCapturing || _frameProcessing) return;
+    if (_selectedClass == null) return;
+
+    final now = DateTime.now();
+    if (_lastCaptureTime != null &&
+        now.difference(_lastCaptureTime!) < _captureInterval) {
+      return; // 인터벌 미달 시 스킵
+    }
+
+    if (_captureCount >= _captureTarget) {
+      // 목표 달성 시 스트림 중지
+      _stopCapture();
+      return;
+    }
+
+    _frameProcessing = true;
+    _lastCaptureTime = now;
+
+    // 비동기 특징 추출 (compute isolate로 분리하면 더 좋지만 간단하게 처리)
+    compute(_extractFeaturesIsolate, _prepareImageData(image)).then((features) {
+      if (!mounted || !_isCapturing) {
+        _frameProcessing = false;
+        return;
+      }
+
+      _knn.addSample(_selectedClass!, features);
+      _sampleCounts[_selectedClass!] =
+          (_sampleCounts[_selectedClass!] ?? 0) + 1;
+
+      _frameProcessing = false;
+
+      if (mounted) {
+        setState(() => _captureCount++);
+
+        // Epoch 목표 도달 시 자동 중지 (총 = captureTarget × epochCount)
+        if (_captureCount >= _captureTarget * _epochCount) {
+          _stopCapture();
+          _showSnack('"$_selectedClass" 수집 완료: $_captureCount장 (${_epochCount}회)');
+        }
+      }
+    }).catchError((e) {
+      debugPrint('[Vision] 프레임 처리 오류: $e');
+      _frameProcessing = false;
+    });
+  }
+
+  void _stopCapture() {
+    _isCapturing = false;
+    _frameProcessing = false;
+
+    if (_camCtrl != null &&
+        _camCtrl!.value.isInitialized &&
+        _camCtrl!.value.isStreamingImages) {
+      _camCtrl!.stopImageStream().catchError((e) {
+        debugPrint('[Vision] 스트림 중지 오류: $e');
+      });
+    }
+
+    if (mounted) setState(() {});
+  }
+
+  // ── Isolate용 이미지 데이터 준비 ──────────────────────────────
+  /// CameraImage → 직렬화 가능한 Map으로 변환
+  Map<String, dynamic> _prepareImageData(CameraImage image) {
+    return {
+      'width': image.width,
+      'height': image.height,
+      'yBytes': image.planes[0].bytes,
+      'uBytes': image.planes[1].bytes,
+      'vBytes': image.planes[2].bytes,
+      'yBytesPerRow': image.planes[0].bytesPerRow,
+      'uvBytesPerRow': image.planes[1].bytesPerRow,
+      'uvPixelStride': image.planes[1].bytesPerPixel ?? 2,
+    };
+  }
+
+  /// 메인 스레드에서 동기 특징 추출 (1fps이므로 UI 영향 미미)
+  List<double> _extractFeaturesSync(CameraImage image) {
+    return _extractFeaturesIsolate(_prepareImageData(image));
+  }
+
+  // ── Isolate에서 실행되는 특징 추출 함수 ─────────────────────
+  static List<double> _extractFeaturesIsolate(Map<String, dynamic> data) {
+    final width  = data['width']  as int;
+    final height = data['height'] as int;
+    final yBytes = data['yBytes'] as Uint8List;
+    final uBytes = data['uBytes'] as Uint8List;
+    final vBytes = data['vBytes'] as Uint8List;
+    final yBytesPerRow  = data['yBytesPerRow']  as int;
+    final uvBytesPerRow = data['uvBytesPerRow']  as int;
+    final uvPixelStride = data['uvPixelStride']  as int;
+
+    // YUV420 → img.Image 변환
+    final yuvImg = img.Image(width: width, height: height);
+    for (int y = 0; y < height; y++) {
+      for (int x = 0; x < width; x++) {
+        final uvIndex = uvPixelStride * (x ~/ 2) + uvBytesPerRow * (y ~/ 2);
+        final yVal = yBytes[y * yBytesPerRow + x];
+        final uVal = uBytes[uvIndex];
+        final vVal = vBytes[uvIndex];
+
+        final yy = yVal - 16;
+        final uu = uVal - 128;
+        final vv = vVal - 128;
+
+        final r = (1.164 * yy + 1.596 * vv).round().clamp(0, 255);
+        final g = (1.164 * yy - 0.392 * uu - 0.813 * vv).round().clamp(0, 255);
+        final b = (1.164 * yy + 2.017 * uu).round().clamp(0, 255);
+
+        yuvImg.setPixelRgb(x, y, r, g, b);
+      }
+    }
+
+    // 리사이즈 224×224
+    final resized = img.copyResize(yuvImg, width: 224, height: 224);
+    return _computeFeatures(resized);
+  }
+
+  /// img.Image에서 색상/공간 특징 벡터 추출 (1024-dim)
+  static List<double> _computeFeatures(img.Image image) {
+    const bins  = 64;
+    const fDim  = 1024;
     final rHist = List.filled(bins, 0.0);
     final gHist = List.filled(bins, 0.0);
     final bHist = List.filled(bins, 0.0);
 
-    final w = image.width;
-    final h = image.height;
+    final w     = image.width;
+    final h     = image.height;
     final total = w * h;
 
     for (int y = 0; y < h; y++) {
@@ -323,13 +577,12 @@ class _CustomVisionScreenState extends State<CustomVisionScreen>
       }
     }
 
-    // 정규화
     final features = <double>[];
     for (final hist in [rHist, gHist, bHist]) {
       features.addAll(hist.map((v) => v / total));
     }
 
-    // 4분할 영역별 평균 (2x2 그리드 × RGB 3채널 × 평균 = 12)
+    // 2×2 그리드 평균 (4구역 × 3채널 = 12)
     for (int ry = 0; ry < 2; ry++) {
       for (int rx = 0; rx < 2; rx++) {
         double rSum = 0, gSum = 0, bSum = 0;
@@ -347,107 +600,93 @@ class _CustomVisionScreenState extends State<CustomVisionScreen>
       }
     }
 
-    // 패딩하여 _featureDim 맞춤 (반복으로 확장)
-    while (features.length < _featureDim) {
-      final needed = _featureDim - features.length;
-      final copy = features.sublist(0, math.min(features.length, needed));
-      features.addAll(copy);
+    // 1024-dim으로 패딩 (반복)
+    while (features.length < fDim) {
+      final needed = fDim - features.length;
+      features.addAll(features.sublist(0, math.min(features.length, needed)));
     }
 
-    return features.sublist(0, _featureDim);
+    return features.sublist(0, fDim);
   }
 
-  /// CameraImage에서 직접 특징 추출 (폴백)
-  List<double> _extractFromCameraImageDirectly(CameraImage image) {
-    final plane = image.planes[0];
-    final bytes = plane.bytes;
-    final step = math.max(1, bytes.length ~/ _featureDim);
-    final features = <double>[];
-    for (int i = 0; i < _featureDim; i++) {
-      final idx = (i * step).clamp(0, bytes.length - 1);
-      features.add(bytes[idx] / 255.0);
-    }
-    return features;
-  }
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  // imageStream 기반 실시간 추론
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-  /// YUV420 → img.Image 변환
-  img.Image _convertYuv420ToImage(CameraImage cameraImage) {
-    final width = cameraImage.width;
-    final height = cameraImage.height;
-    final yuvImg = img.Image(width: width, height: height);
-
-    final yPlane = cameraImage.planes[0];
-    final uPlane = cameraImage.planes[1];
-    final vPlane = cameraImage.planes[2];
-
-    final yBytes = yPlane.bytes;
-    final uBytes = uPlane.bytes;
-    final vBytes = vPlane.bytes;
-
-    final uvRowStride = uPlane.bytesPerRow;
-    final uvPixelStride = uPlane.bytesPerPixel ?? 2;
-
-    for (int y = 0; y < height; y++) {
-      for (int x = 0; x < width; x++) {
-        final uvIndex =
-            uvPixelStride * (x ~/ 2) + uvRowStride * (y ~/ 2);
-        final yVal = yBytes[y * yPlane.bytesPerRow + x];
-        final uVal = uBytes[uvIndex];
-        final vVal = vBytes[uvIndex];
-
-        final yy = yVal - 16;
-        final uu = uVal - 128;
-        final vv = vVal - 128;
-
-        int r = (1.164 * yy + 1.596 * vv).round().clamp(0, 255);
-        int g = (1.164 * yy - 0.392 * uu - 0.813 * vv).round().clamp(0, 255);
-        int b = (1.164 * yy + 2.017 * uu).round().clamp(0, 255);
-
-        yuvImg.setPixelRgb(x, y, r, g, b);
-      }
-    }
-    return yuvImg;
-  }
-
-  // ── 샘플 캡처 ─────────────────────────────────────────────────
-  Future<void> _startCapture() async {
-    if (_selectedClass == null || !_cameraReady || _isCapturing) return;
-    setState(() {
-      _isCapturing = true;
-      _captureCount = 0;
-    });
-
-    // 연속 20장 캡처
-    while (_captureCount < _captureTarget && _isCapturing) {
-      await _captureSingleFrame();
-      await Future.delayed(const Duration(milliseconds: 150));
-    }
-
-    setState(() => _isCapturing = false);
-  }
-
-  Future<void> _captureSingleFrame() async {
+  Future<void> _startStreamForInference() async {
     if (_camCtrl == null || !_camCtrl!.value.isInitialized) return;
+    if (_streamInference) return;
+    _streamInference = true;
+    _lastInferTime = null;
+    _inferProcessing = false;
+
     try {
-      final image = await _camCtrl!.takePicture();
-      final bytes = await image.readAsBytes();
-      final decoded = img.decodeImage(bytes);
-      if (decoded == null) return;
-
-      final resized =
-          img.copyResize(decoded, width: _inputSize, height: _inputSize);
-      final features = _extractImageFeatures(resized);
-
-      _knn.addSample(_selectedClass!, features);
-      _sampleCounts[_selectedClass!] =
-          (_sampleCounts[_selectedClass!] ?? 0) + 1;
-
-      if (mounted) {
-        setState(() => _captureCount++);
+      if (!_camCtrl!.value.isStreamingImages) {
+        await _camCtrl!.startImageStream(_onInferFrame);
+      } else {
+        // 이미 스트림 중 (수집 탭에서 넘어온 경우)
+        // 스트림 콜백을 추론 콜백으로 재등록하려면 재시작 필요
+        await _camCtrl!.stopImageStream();
+        await Future.delayed(const Duration(milliseconds: 150));
+        await _camCtrl!.startImageStream(_onInferFrame);
       }
+      if (mounted) setState(() {});
     } catch (e) {
-      if (kDebugMode) debugPrint('[Vision] 캡처 오류: $e');
+      debugPrint('[Vision] 추론 스트림 시작 오류: $e');
+      _streamInference = false;
     }
+  }
+
+  void _onInferFrame(CameraImage image) {
+    if (!_streamInference || _inferProcessing || !_trained) return;
+
+    final now = DateTime.now();
+    if (_lastInferTime != null &&
+        now.difference(_lastInferTime!) < _inferInterval) {
+      return;
+    }
+
+    _inferProcessing = true;
+    _lastInferTime = now;
+
+    compute(_extractFeaturesIsolate, _prepareImageData(image)).then((features) {
+      if (!mounted || !_streamInference) {
+        _inferProcessing = false;
+        return;
+      }
+
+      final result = _knn.classify(features);
+      if (result != null) {
+        final best = result.entries.reduce(
+            (a, b) => a.value > b.value ? a : b);
+        if (mounted) {
+          setState(() {
+            _inferLabel = best.key;
+            _inferConf  = best.value;
+            _allConf    = result;
+          });
+        }
+      }
+      _inferProcessing = false;
+    }).catchError((e) {
+      debugPrint('[Vision] 추론 오류: $e');
+      _inferProcessing = false;
+    });
+  }
+
+  void _stopInferenceStream() {
+    if (!_streamInference) return;
+    _streamInference = false;
+    _inferProcessing = false;
+
+    if (_camCtrl != null &&
+        _camCtrl!.value.isInitialized &&
+        _camCtrl!.value.isStreamingImages) {
+      _camCtrl!.stopImageStream().catchError((e) {
+        debugPrint('[Vision] 추론 스트림 중지 오류: $e');
+      });
+    }
+    if (mounted) setState(() {});
   }
 
   // ── KNN 학습 (저장) ───────────────────────────────────────────
@@ -463,58 +702,13 @@ class _CustomVisionScreenState extends State<CustomVisionScreen>
 
     setState(() => _trained = true);
     await _saveKnn();
-    _showSnack('학습 완료! ${_knn.sampleCount}개 샘플, ${_classes.length}개 클래스');
-  }
-
-  // ── 실시간 추론 ───────────────────────────────────────────────
-  void _startStreamInference() {
-    if (_inferTimer != null) return;
-    _streamInference = true;
-    _inferTimer = Timer.periodic(const Duration(milliseconds: 600), (_) {
-      if (_streamInference && _trained) _runInference();
-    });
-  }
-
-  void _stopStreamInference() {
-    _streamInference = false;
-    _inferTimer?.cancel();
-    _inferTimer = null;
-  }
-
-  Future<void> _runInference() async {
-    if (_inferring || _camCtrl == null || !_camCtrl!.value.isInitialized) {
-      return;
-    }
-    _inferring = true;
-
-    try {
-      // 카메라 프레임 캡처 후 특징 추출
-      final picture = await _camCtrl!.takePicture();
-      final bytes = await picture.readAsBytes();
-      final decoded = img.decodeImage(bytes);
-      if (decoded == null) {
-        _inferring = false;
-        return;
-      }
-      final resized =
-          img.copyResize(decoded, width: _inputSize, height: _inputSize);
-      final features = _extractImageFeatures(resized);
-
-      final result = _knn.classify(features);
-      if (result != null && mounted) {
-        final best = result.entries.reduce(
-            (a, b) => a.value > b.value ? a : b);
-        setState(() {
-          _inferLabel = best.key;
-          _inferConf  = best.value;
-          _allConf    = result;
-        });
-      }
-    } catch (e) {
-      if (kDebugMode) debugPrint('[Vision] 추론 오류: $e');
-    } finally {
-      _inferring = false;
-    }
+    // 학습 완료 → YoloDetectorService에 KNN 모드 등록
+    widget.yoloService?.setCustomKnnMode(
+      classes: List<String>.from(_classes),
+      inferFn: (features) => _knn.classify(features),
+      featureFn: (camImage) => _extractFeaturesSync(camImage),
+    );
+    _showSnack('학습 완료! ${_knn.sampleCount}개 샘플, ${_classes.length}개 클래스\n메인 화면 객체인식이 학습된 모델로 전환됩니다.');
   }
 
   // ── 클래스 추가 ───────────────────────────────────────────────
@@ -601,6 +795,7 @@ class _CustomVisionScreenState extends State<CustomVisionScreen>
     );
 
     if (ok == true) {
+      _stopCapture();
       _knn._samples.removeWhere((s) => s.label == label);
       setState(() {
         _classes.remove(label);
@@ -643,6 +838,8 @@ class _CustomVisionScreenState extends State<CustomVisionScreen>
     );
 
     if (ok == true) {
+      _stopCapture();
+      _stopInferenceStream();
       _knn.clear();
       setState(() {
         _classes.clear();
@@ -650,6 +847,7 @@ class _CustomVisionScreenState extends State<CustomVisionScreen>
         _selectedClass = null;
         _trained = false;
         _inferLabel = null;
+        _captureCount = 0;
       });
       final prefs = await SharedPreferences.getInstance();
       await prefs.remove(_prefKey);
@@ -672,13 +870,35 @@ class _CustomVisionScreenState extends State<CustomVisionScreen>
         leading: IconButton(
           icon: const Icon(Icons.arrow_back_ios,
               color: Colors.white, size: 18),
-          onPressed: () => Navigator.pop(context),
+          onPressed: () {
+            // 화면 닫기 전 스트림 중지 (카메라 반환)
+            _stopCapture();
+            _stopInferenceStream();
+            Navigator.pop(context);
+          },
         ),
         title: Row(children: [
           const Icon(Icons.auto_awesome, color: Colors.cyanAccent, size: 20),
           const SizedBox(width: 8),
           const Text('직접 학습 (온디바이스)',
               style: TextStyle(color: Colors.white, fontSize: 15)),
+          if (_modelLoaded) ...[
+            const SizedBox(width: 8),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+              decoration: BoxDecoration(
+                color: Colors.greenAccent.withValues(alpha: 0.15),
+                borderRadius: BorderRadius.circular(4),
+                border: Border.all(
+                    color: Colors.greenAccent.withValues(alpha: 0.4)),
+              ),
+              child: const Text('TFLite',
+                  style: TextStyle(
+                      color: Colors.greenAccent,
+                      fontSize: 9,
+                      fontFamily: 'monospace')),
+            ),
+          ],
         ]),
         actions: [
           IconButton(
@@ -865,31 +1085,75 @@ class _CustomVisionScreenState extends State<CustomVisionScreen>
 
               const SizedBox(height: 16),
 
-              // 캡처 버튼
+              // 수집 안내 & 버튼
               if (_selectedClass != null)
                 Column(children: [
-                  // 진행률
                   if (_isCapturing) ...[
-                    LinearProgressIndicator(
-                      value: _captureCount / _captureTarget,
-                      backgroundColor: Colors.white.withValues(alpha: 0.1),
-                      valueColor: const AlwaysStoppedAnimation<Color>(
-                          Colors.cyanAccent),
-                      borderRadius: BorderRadius.circular(4),
+                    // 수집 중 진행바
+                    Row(children: [
+                      Expanded(
+                        child: LinearProgressIndicator(
+                          value: _captureCount / _captureTarget,
+                          backgroundColor:
+                              Colors.white.withValues(alpha: 0.1),
+                          valueColor: const AlwaysStoppedAnimation<Color>(
+                              Colors.cyanAccent),
+                          borderRadius: BorderRadius.circular(4),
+                          minHeight: 8,
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Text(
+                        '$_captureCount/$_captureTarget',
+                        style: const TextStyle(
+                            color: Colors.cyanAccent,
+                            fontSize: 12,
+                            fontFamily: 'monospace'),
+                      ),
+                    ]),
+                    const SizedBox(height: 8),
+                    // 실시간 수집 피드백
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: Colors.cyanAccent.withValues(alpha: 0.08),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(
+                            color: Colors.cyanAccent.withValues(alpha: 0.3)),
+                      ),
+                      child: Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            const SizedBox(
+                              width: 10,
+                              height: 10,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 1.5,
+                                color: Colors.cyanAccent,
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Text(
+                              '"$_selectedClass" 수집 중...  0.5초 간격',
+                              style: const TextStyle(
+                                  color: Colors.cyanAccent, fontSize: 12),
+                            ),
+                          ]),
                     ),
                     const SizedBox(height: 8),
-                    Text(
-                      '$_captureCount / $_captureTarget 수집 중...',
-                      style: const TextStyle(
-                          color: Colors.cyanAccent, fontSize: 12),
-                    ),
-                    const SizedBox(height: 8),
-                    TextButton(
-                      onPressed: () => setState(() => _isCapturing = false),
-                      child: const Text('중지',
+                    TextButton.icon(
+                      onPressed: _stopCapture,
+                      icon: const Icon(Icons.stop_circle,
+                          color: Colors.redAccent, size: 16),
+                      label: const Text('수집 중지',
                           style: TextStyle(color: Colors.redAccent)),
                     ),
                   ] else ...[
+                    // ── Epoch + 수집 목표 설정 ──
+                    _buildEpochControl(),
+                    const SizedBox(height: 10),
+                    // 수집 시작 버튼
                     SizedBox(
                       width: double.infinity,
                       child: ElevatedButton.icon(
@@ -898,15 +1162,16 @@ class _CustomVisionScreenState extends State<CustomVisionScreen>
                               Colors.cyanAccent.withValues(alpha: 0.15),
                           foregroundColor: Colors.cyanAccent,
                           side: const BorderSide(color: Colors.cyanAccent),
-                          padding: const EdgeInsets.symmetric(vertical: 14),
+                          padding:
+                              const EdgeInsets.symmetric(vertical: 14),
                           shape: RoundedRectangleBorder(
                               borderRadius: BorderRadius.circular(12)),
                         ),
-                        onPressed:
-                            _cameraReady ? _startCapture : null,
-                        icon: const Icon(Icons.camera_alt, size: 20),
+                        onPressed: _cameraReady ? _startCapture : null,
+                        icon: const Icon(Icons.fiber_manual_record,
+                            size: 16, color: Colors.redAccent),
                         label: Text(
-                          '"$_selectedClass" 촬영 시작 (연속 $_captureTarget장)',
+                          '"$_selectedClass" 수집 ($_captureTarget장 × $_epochCount회)',
                           style: const TextStyle(
                               fontWeight: FontWeight.bold),
                         ),
@@ -914,7 +1179,8 @@ class _CustomVisionScreenState extends State<CustomVisionScreen>
                     ),
                     const SizedBox(height: 6),
                     Text(
-                      '길게 누르면 클래스 삭제',
+                      '0.5초 간격 · 총 ${_captureTarget * _epochCount}장 수집 · 길게 누르면 클래스 삭제',
+                      textAlign: TextAlign.center,
                       style: TextStyle(
                         color: Colors.white.withValues(alpha: 0.3),
                         fontSize: 10,
@@ -970,7 +1236,8 @@ class _CustomVisionScreenState extends State<CustomVisionScreen>
                     '클래스 수', '${_classes.length}개', _classes.length >= 2),
                 _buildStatusRow(
                     '총 샘플 수', '$totalSamples개', totalSamples >= 10),
-                _buildStatusRow('학습 완료', _trained ? '완료' : '미완료', _trained),
+                _buildStatusRow(
+                    '학습 완료', _trained ? '완료' : '미완료', _trained),
                 const SizedBox(height: 8),
                 if (_classes.isNotEmpty) ...[
                   const Divider(color: Colors.white12),
@@ -1059,7 +1326,8 @@ class _CustomVisionScreenState extends State<CustomVisionScreen>
                 backgroundColor: canTrain
                     ? Colors.cyanAccent
                     : Colors.white.withValues(alpha: 0.1),
-                foregroundColor: canTrain ? Colors.black : Colors.white38,
+                foregroundColor:
+                    canTrain ? Colors.black : Colors.white38,
                 padding: const EdgeInsets.symmetric(vertical: 16),
                 shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(14)),
@@ -1068,7 +1336,8 @@ class _CustomVisionScreenState extends State<CustomVisionScreen>
               icon: const Icon(Icons.model_training, size: 22),
               label: const Text(
                 '모델 학습 시작',
-                style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                style:
+                    TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
               ),
             ),
           ),
@@ -1161,7 +1430,8 @@ class _CustomVisionScreenState extends State<CustomVisionScreen>
               Text(
                 '아직 학습이 완료되지 않았습니다',
                 style: TextStyle(
-                    color: Colors.white.withValues(alpha: 0.6), fontSize: 15),
+                    color: Colors.white.withValues(alpha: 0.6),
+                    fontSize: 15),
               ),
               const SizedBox(height: 12),
               ElevatedButton(
@@ -1175,7 +1445,7 @@ class _CustomVisionScreenState extends State<CustomVisionScreen>
     }
 
     return Column(children: [
-      // 카메라 뷰
+      // 카메라 뷰 + 인식 결과 오버레이
       Expanded(
         flex: 6,
         child: Stack(children: [
@@ -1190,7 +1460,7 @@ class _CustomVisionScreenState extends State<CustomVisionScreen>
               child: Container(
                 padding: const EdgeInsets.all(14),
                 decoration: BoxDecoration(
-                  color: Colors.black.withValues(alpha: 0.7),
+                  color: Colors.black.withValues(alpha: 0.75),
                   borderRadius: BorderRadius.circular(14),
                   border: Border.all(
                     color: Colors.cyanAccent.withValues(alpha: 0.5),
@@ -1222,7 +1492,6 @@ class _CustomVisionScreenState extends State<CustomVisionScreen>
                       ),
                     ]),
                     const SizedBox(height: 8),
-                    // 전체 클래스 신뢰도 바
                     if (_allConf != null)
                       ...(_allConf!.entries.toList()
                             ..sort((a, b) => b.value.compareTo(a.value)))
@@ -1247,8 +1516,8 @@ class _CustomVisionScreenState extends State<CustomVisionScreen>
                                   Expanded(
                                     child: LinearProgressIndicator(
                                       value: e.value,
-                                      backgroundColor:
-                                          Colors.white.withValues(alpha: 0.1),
+                                      backgroundColor: Colors.white
+                                          .withValues(alpha: 0.1),
                                       valueColor:
                                           AlwaysStoppedAnimation<Color>(
                                         e.key == _inferLabel
@@ -1271,7 +1540,7 @@ class _CustomVisionScreenState extends State<CustomVisionScreen>
               ),
             ),
 
-          // 스트리밍 상태 표시
+          // 스트리밍 상태
           Positioned(
             top: 8,
             right: 8,
@@ -1289,8 +1558,7 @@ class _CustomVisionScreenState extends State<CustomVisionScreen>
               ),
               child: Row(mainAxisSize: MainAxisSize.min, children: [
                 Container(
-                  width: 6,
-                  height: 6,
+                  width: 6, height: 6,
                   decoration: BoxDecoration(
                     shape: BoxShape.circle,
                     color: _streamInference
@@ -1310,7 +1578,7 @@ class _CustomVisionScreenState extends State<CustomVisionScreen>
         ]),
       ),
 
-      // 버튼 영역
+      // 버튼
       Padding(
         padding: const EdgeInsets.all(12),
         child: Row(children: [
@@ -1320,8 +1588,9 @@ class _CustomVisionScreenState extends State<CustomVisionScreen>
                 backgroundColor: _streamInference
                     ? Colors.redAccent.withValues(alpha: 0.2)
                     : Colors.greenAccent.withValues(alpha: 0.2),
-                foregroundColor:
-                    _streamInference ? Colors.redAccent : Colors.greenAccent,
+                foregroundColor: _streamInference
+                    ? Colors.redAccent
+                    : Colors.greenAccent,
                 side: BorderSide(
                     color: _streamInference
                         ? Colors.redAccent
@@ -1332,11 +1601,10 @@ class _CustomVisionScreenState extends State<CustomVisionScreen>
               ),
               onPressed: () {
                 if (_streamInference) {
-                  _stopStreamInference();
+                  _stopInferenceStream();
                 } else {
-                  _startStreamInference();
+                  _startStreamForInference();
                 }
-                setState(() {});
               },
               icon: Icon(
                   _streamInference ? Icons.stop : Icons.play_arrow,
@@ -1358,7 +1626,10 @@ class _CustomVisionScreenState extends State<CustomVisionScreen>
               shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(12)),
             ),
-            onPressed: () => _tabCtrl.animateTo(0),
+            onPressed: () {
+              _stopInferenceStream();
+              _tabCtrl.animateTo(0);
+            },
             icon: const Icon(Icons.add_a_photo, size: 16),
             label: const Text('추가 수집'),
           ),
@@ -1371,21 +1642,21 @@ class _CustomVisionScreenState extends State<CustomVisionScreen>
   Widget _buildCameraView() {
     if (_permDenied) {
       return Center(
-        child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-          const Icon(Icons.camera_alt,
-              size: 48, color: Colors.white24),
+        child:
+            Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+          const Icon(Icons.camera_alt, size: 48, color: Colors.white24),
           const SizedBox(height: 12),
           const Text('카메라 권한이 필요합니다',
               style: TextStyle(color: Colors.white60)),
           const SizedBox(height: 8),
           ElevatedButton(
-              onPressed: openAppSettings,
-              child: const Text('권한 설정')),
+              onPressed: openAppSettings, child: const Text('권한 설정')),
         ]),
       );
     }
 
-    if (!_cameraReady || _camCtrl == null) {
+    if (!_cameraReady || _camCtrl == null ||
+        !_camCtrl!.value.isInitialized) {
       return Container(
         color: Colors.black,
         child: const Center(

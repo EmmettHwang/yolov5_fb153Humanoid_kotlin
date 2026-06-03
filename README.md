@@ -9,11 +9,69 @@
 
 | 항목 | 내용 |
 |------|------|
-| **버전** | `1.2.260603190156` (build 20) — 최신 |
-| **빌드 날짜** | 2026-06-03 19:01 KST |
-| **APK 크기** | ~50 MB (arm64) |
+| **버전** | `1.5.260624000000` (build 23) — 최신 |
+| **빌드 날짜** | 2026-06-24 KST |
+| **APK 크기** | ~80 MB (arm64) |
 | **패키지** | `com.robocommander.control` |
 | **Min SDK** | Android 8.0 (API 26) |
+
+### v1.5.260624000000 (build 23) — 2026-06-24
+
+#### 🔵 LED / Position 제어 시스템
+- **`PacketBuilder.buildLed()`** — 16B LED 패킷 신규 구현  
+  `FF FF 4C 53 00 00 00 00 30 05 04 [ID] [R] [G] [B] [CHK]`  
+  CHK = byte[6..14] 합산 & 0xFF
+- **`PacketBuilder.buildPosition()`** — 16B 포지션 패킷 신규 구현  
+  `FF FF 4C 53 00 00 00 00 30 03 04 [ID] [TORQ] [POS_H] [POS_L] [CHK]`  
+  16-bit signed position(big-endian), 음수 → `pos + 65536` 변환
+- **모터 ID 상수**: `motorIdHead = 18` (머리), `motorIdWaist = 17` (허리)
+- **`BluetoothManager`** — `sendLed()` / `sendLedOff()` / `sendPosition()` 헬퍼 추가
+
+#### 💬 말하는 LED 애니메이션 (LedSpeechAnimator)
+- **`AudioService`** — `onSpeechStart(estimatedMs)` / `onSpeechDone()` 콜백 추가  
+  TTS 완료·취소 시 자동 호출, MP3 완료 이벤트 연동
+- **`LedSpeechAnimator`** — 신규 클래스: 오디오 재생 중 18번(머리) LED를 sin 파형으로 반짝임  
+  - 80ms 주기 `Timer.periodic` + `sin()` 함수로 밝기 40~255 변화  
+  - 따뜻한 황색광 (`r=brightness`, `g=brightness÷4`, `b=0`) — "말하는 것처럼" 표현  
+  - 예상 발화 시간 + 500ms 후 강제 종료 (TTS 미콜백 대비)  
+  - `_stop()` 시 `buildLedOff()` 전송 → LED 완전 소등
+- **`ControlScreen`** — `LedSpeechAnimator` 초기화 + `attach(AudioService())` 연결, `dispose()` 처리
+
+#### 🎮 액션 버튼 15개 (3×5)
+- **`ActionButtonPanel`** — `buttonCount` 파라미터 추가, 기본 9 → 15 지원  
+  `childAspectRatio`: 버튼 수 > 9이면 1.4, 이하이면 1.0 동적 조정
+- **`ActionButtonConfig.defaults()`** — 버튼 10~15 (motion 26~31) 추가
+- **`CommandSetManager._buttonCount = 15`** 고정, `executeCommandSet()`에서 `AudioService().playForButton()` 직접 호출
+
+#### 📸 카메라 영역 축소 + Epoch 수집
+- **카메라 높이** `size.height × 0.46` → `× 0.30` (30% 축소)
+- **Epoch 수집 UI** (`_buildEpochControl()`):  
+  - 샘플 수 슬라이더 20~500 (200 이하 황색 경고)  
+  - Epoch 슬라이더 1~10 (보라색)  
+  - 수집 완료 조건: `captureCount ≥ captureTarget × epochCount`  
+  - 버튼 레이블: `"[클래스]" 수집 ([N]장 × [E]회)`
+
+#### 🤖 나의 로봇 탭 + 헤더 개선
+- **`_filterMyRobots()`** — 별명 있거나 `lastMac`인 기기만 "나의 로봇" 탭에 표시
+- **"미지정 로봇" → "안 사귄 로봇"** — 탭 제목 및 배너 문구 변경
+- **배지 중복 제거** — 우측 Column에서 "별명" 배지 제거, "최근" 배지만 유지
+- **헤더 별명+아바타** — 연결 시 `RobotNicknameService.displayName()` + `RobotAvatarWidget(size: 36)` 표시
+
+### v1.4.260604000000 (build 22) — 2026-06-04
+- **📸 아바타 카메라 촬영 지원**: 로봇 별명 편집 다이얼로그 사진 버튼 → 바텀시트로 **카메라 촬영** / **갤러리 선택** 분기
+  - `image_picker 1.1.2` 적용 — 해상도 512×512, JPEG 85% 품질로 최적화
+  - 카메라 촬영: 로봇을 직접 찍어 아바타로 즉시 등록
+  - 갤러리 선택: 저장된 사진에서 아바타 선택
+  - 권한 오류 시 명확한 안내 SnackBar 표시
+- **🤖 나의 로봇 / 미지정 로봇 탭 재구성** (v1.3)
+  - 탭1 "페어링된 기기" → **"나의 로봇"** (별명 있는 기기 상단, 최근 연결 강조)
+  - 탭2 "새 기기 검색" → **"미지정 로봇"** (FB153 이름 포함 기기만 필터, MAC 4자리 20px bold 표시)
+  - FB153 / 전체 발견 카운트 배너 실시간 표시
+- **🔄 카메라 재초기화** (v1.3): `CustomVisionScreen` 닫고 복귀 시 카메라 블랙 현상 해결
+  - `WidgetsBindingObserver.didChangeAppLifecycleState(resumed)` + `didChangeDependencies()` 조합
+- **📡 BT 자동 재연결 개선** (v1.3): `tryAutoReconnect()` 네이티브 이벤트 도달 전 `isConnected` 오판 방지
+  - 100ms 폴링 × 최대 30회(3초) 대기, splash에서 `await timeout(4s)` 결과 확인 후 화면 전환
+- **✨ 학습 플로우 개선** (v1.3): `takePicture()` 루프 → `imageStream` 기반 0.5초 인터벌 + `compute()` isolate로 교체
 
 ### v1.2.260603190156 (build 20) — 2026-06-03
 - **🤖 로봇 별명 짓기**: BT 연결 화면에서 기기 카드 길게 누르면 원하는 이름 지정 (MAC→별명 매핑, SharedPreferences 저장)
@@ -64,6 +122,10 @@
 
 | 버전 | 빌드 시각 | 주요 변경 내용 |
 |------|-----------|----------------|
+| **1.5.260624000000** | 2026-06-24 KST | LED/Position 제어, LedSpeechAnimator(sin 파형), 버튼 15개(3×5), Epoch 수집 UI, 카메라 30%, 나의 로봇 필터, 안 사귄 로봇 |
+| 1.4.260604000000 | 2026-06-04 KST | 아바타 카메라 촬영+갤러리 선택 바텀시트, image_picker 1.1.2 |
+| 1.3.260603193425 | 2026-06-03 19:34 KST | 나의 로봇/미지정 로봇 탭, imageStream 학습, 카메라 재초기화, BT 폴링 자동 재연결 |
+| 1.2.260603190156 | 2026-06-03 19:01 KST | 로봇 별명/아바타, 미페어링 BT 검색, Teachable Machine KNN 직접 학습, 위치권한 |
 | **1.1.250520193425** | 2025-05-20 19:34 KST | 조이스틱 시퀀스(2→3→4/9→10→11), 음성버튼 이동, 비전설정 버튼, YOLO 자동 트리거, 로봇이름 커스터마이징 |
 | 1.0.250520184336 | 2025-05-20 18:43 KST | MP3/TTS 버튼 오디오, 모션 스피너, 모션 테이블, BT 자동 재연결, 햅틱, file_picker |
 | 1.0.250520181205 | 2025-05-20 18:12 KST | flutter_bluetooth_serial 제거, MethodChannel+EventChannel 네이티브 BT, ch1 reflection 연결 |
@@ -114,10 +176,28 @@
 - 매칭 성공 시 해당 모션 자동 실행 + SnackBar 피드백
 
 ### 📡 패킷 프로토콜
+
+**[A] ExeMotion (15 bytes)**
 ```
-FF FF 4C 53 00 00 00 00 30 0C 03 [motionIdx] 00 64 [checksum]
-                                                    ↑
-                          checksum = byte[6]~byte[13] 합산 & 0xFF
+FF FF 4C 53 00 00 | 00 00 30 0C 03 [M] 00 64 [CHK]
+                                                ↑
+                    CHK = byte[6..13] 합산 & 0xFF
+```
+
+**[B] LED Control (16 bytes)**
+```
+FF FF 4C 53 00 00 | 00 00 30 05 04 [ID] [R] [G] [B] [CHK]
+                                                         ↑
+                           CHK = byte[6..14] 합산 & 0xFF
+  ID: 머리=18(0x12), 허리=17(0x11)
+```
+
+**[C] Position Control (16 bytes)**
+```
+FF FF 4C 53 00 00 | 00 00 30 03 04 [ID] [TORQ] [PH] [PL] [CHK]
+                                                              ↑
+                              CHK = byte[6..14] 합산 & 0xFF
+  position: 16-bit signed big-endian (음수 → pos + 65536)
 ```
 
 ---
@@ -132,6 +212,7 @@ FF FF 4C 53 00 00 00 00 30 0C 03 [motionIdx] 00 64 [checksum]
 | camera | 0.11.1 | 실시간 카메라 피드 |
 | tflite_flutter | 0.10.4 | TFLite 온디바이스 추론 |
 | image | 4.1.7 | 카메라 프레임 전처리 (YUV→RGB) |
+| image_picker | 1.1.2 | 아바타 카메라 촬영 / 갤러리 선택 |
 | provider | 6.1.5+1 | 상태 관리 |
 | shared_preferences | 2.5.3 | 마지막 연결 기기 / 버튼 설정 저장 |
 | speech_to_text | 6.6.2 | 음성 인식 (STT) |
@@ -168,7 +249,9 @@ build/app/outputs/flutter-apk/app-release.apk
 | `BLUETOOTH_SCAN` | BT 기기 검색 (API 31+) |
 | `BLUETOOTH` / `BLUETOOTH_ADMIN` | Android 11 이하 호환 |
 | `ACCESS_FINE_LOCATION` | BT 스캔 (API ≤30) |
-| `CAMERA` | 실시간 카메라 피드 + TFLite 사물인식 |
+| `CAMERA` | 실시간 카메라 피드 + TFLite 사물인식 + 아바타 촬영 |
+| `READ_MEDIA_IMAGES` | 갤러리 이미지 접근 (API 33+) |
+| `READ_EXTERNAL_STORAGE` | 갤러리 이미지 접근 (API ≤32) |
 | `RECORD_AUDIO` | 음성 인식 STT |
 
 ---

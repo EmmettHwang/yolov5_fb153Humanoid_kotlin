@@ -4,26 +4,38 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../models/action_button_config.dart';
 import '../bluetooth/bluetooth_manager.dart';
 import '../services/yolo_detector_service.dart';
+import '../services/audio_service.dart';
 
 /// 버튼 명령어 셋 관리자 (SharedPreferences 저장)
 class CommandSetManager extends ChangeNotifier {
   static const String _keyPrefix = 'button_config_';
-  static const int _buttonCount = 9;
+  static const int _buttonCount = 15;
 
   List<ActionButtonConfig> _configs = [];
   List<ActionButtonConfig> get configs => List.unmodifiable(_configs);
-  // STT 매칭용 alias
   List<ActionButtonConfig> get buttons => _configs;
 
   ActionButtonConfig getConfig(int buttonId) {
+    if (buttonId < 1 || buttonId > _buttonCount) {
+      return ActionButtonConfig.defaults().first;
+    }
     return _configs.firstWhere(
       (c) => c.id == buttonId,
-      orElse: () => ActionButtonConfig.defaults()
-          .firstWhere((c) => c.id == buttonId),
+      orElse: () {
+        final defs = ActionButtonConfig.defaults();
+        return defs.firstWhere(
+          (c) => c.id == buttonId,
+          orElse: () => ActionButtonConfig(
+            id: buttonId,
+            label: '버튼$buttonId',
+            motionIndex: buttonId,
+            color: 0xFF37474F,
+          ),
+        );
+      },
     );
   }
 
-  /// SharedPreferences에서 설정 불러오기
   Future<void> load() async {
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -36,28 +48,38 @@ class CommandSetManager extends ChangeNotifier {
             final json = jsonDecode(jsonStr) as Map<String, dynamic>;
             loaded.add(ActionButtonConfig.fromJson(json));
           } catch (e) {
-            // 손상된 데이터는 기본값 사용
-            loaded.add(ActionButtonConfig.defaults()[i - 1]);
+            loaded.add(_defaultForIndex(i));
           }
         } else {
-          loaded.add(ActionButtonConfig.defaults()[i - 1]);
+          loaded.add(_defaultForIndex(i));
         }
       }
 
       _configs = loaded;
       notifyListeners();
     } catch (e) {
-      _configs = ActionButtonConfig.defaults();
+      _configs = List.generate(_buttonCount, (i) => _defaultForIndex(i + 1));
       notifyListeners();
     }
   }
 
-  /// 버튼 설정 저장
+  ActionButtonConfig _defaultForIndex(int i) {
+    final defs = ActionButtonConfig.defaults();
+    return defs.firstWhere(
+      (c) => c.id == i,
+      orElse: () => ActionButtonConfig(
+        id: i,
+        label: '버튼$i',
+        motionIndex: i,
+        color: 0xFF37474F,
+      ),
+    );
+  }
+
   Future<void> saveConfig(ActionButtonConfig config) async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final jsonStr = jsonEncode(config.toJson());
-      await prefs.setString('$_keyPrefix${config.id}', jsonStr);
+      await prefs.setString('$_keyPrefix${config.id}', jsonEncode(config.toJson()));
 
       final idx = _configs.indexWhere((c) => c.id == config.id);
       if (idx >= 0) {
@@ -72,14 +94,13 @@ class CommandSetManager extends ChangeNotifier {
     }
   }
 
-  /// 기본값으로 초기화
   Future<void> resetToDefaults() async {
     try {
       final prefs = await SharedPreferences.getInstance();
       for (int i = 1; i <= _buttonCount; i++) {
         await prefs.remove('$_keyPrefix$i');
       }
-      _configs = ActionButtonConfig.defaults();
+      _configs = List.generate(_buttonCount, (i) => _defaultForIndex(i + 1));
       notifyListeners();
     } catch (e) {
       if (kDebugMode) debugPrint('초기화 오류: $e');
@@ -87,7 +108,9 @@ class CommandSetManager extends ChangeNotifier {
   }
 
   /// 명령어 시퀀스 실행
-  /// [yoloService] 가 있으면 전송 중 TFLite 추론 일시정지 → 완료 후 재개
+  /// - 모션 패킷 전송
+  /// - 오디오(TTS/MP3)가 있으면 AudioService 재생 →
+  ///   LedSpeechAnimator 가 attach() 돼 있으면 자동으로 18번 머리 LED 반짝임
   Future<void> executeCommandSet(
     ActionButtonConfig config,
     BluetoothManager btManager, {
@@ -95,10 +118,10 @@ class CommandSetManager extends ChangeNotifier {
   }) async {
     if (!btManager.isConnected) return;
 
-    // 추론 일시정지 (딜레이 제거)
     yoloService?.pauseInference();
 
     try {
+      // 모션 실행
       if (config.commandSequence.isEmpty) {
         await btManager.sendMotion(config.motionIndex);
       } else {
@@ -109,8 +132,15 @@ class CommandSetManager extends ChangeNotifier {
           }
         }
       }
+
+      // 오디오 재생 (비동기 — LED 애니메이션은 AudioService 콜백으로 자동 트리거)
+      if (config.hasAudio) {
+        AudioService().playForButton(
+          mp3FilePath: config.mp3FilePath,
+          ttsText: config.ttsText,
+        );
+      }
     } finally {
-      // 추론 재개 (예외 시에도 반드시 재개)
       yoloService?.resumeInference();
     }
   }

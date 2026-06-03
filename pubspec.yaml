@@ -1,7 +1,7 @@
 name: robo_commander
 description: fb153 휴머노이드 로봇 Bluetooth 제어 앱
 publish_to: 'none'
-version: 1.2.260603190156+20
+version: 1.5.260624000000+23
 
 environment:
   sdk: '>=3.0.0 <4.0.0'
@@ -42,6 +42,9 @@ dependencies:
 
   # 파일 탐색기 (MP3 파일 선택)
   file_picker: 8.1.4
+
+  # 이미지 선택 / 카메라 촬영 (로봇 아바타)
+  image_picker: 1.1.2
 
   # Icons
   cupertino_icons: ^1.0.2

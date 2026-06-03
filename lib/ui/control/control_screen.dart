@@ -7,6 +7,7 @@ import '../../models/action_button_config.dart';
 import '../../models/yolo_action_config.dart';
 import '../../services/audio_service.dart';
 import '../../services/robot_name_service.dart';
+import '../../services/robot_nickname_service.dart';
 import '../../services/yolo_detector_service.dart';
 import '../camera/camera_preview_widget.dart';
 import '../camera/custom_vision_screen.dart';
@@ -40,6 +41,9 @@ class _ControlScreenState extends State<ControlScreen>
   bool _isYoloActive = false;
   String _detectedObject = '-';
 
+  // LED 발화 애니메이터
+  LedSpeechAnimator? _ledAnimator;
+
   // YOLO 동작 실행 쿨다운 (너무 자주 실행 방지, 3초)
   DateTime? _lastYoloActionTime;
   static const _yoloCooldown = Duration(seconds: 3);
@@ -53,6 +57,13 @@ class _ControlScreenState extends State<ControlScreen>
 
     _yoloService = YoloDetectorService();
     _yoloService.addListener(_onYoloResultsChanged);
+
+    // LED 발화 애니메이터 초기화 (BT 연결 시에만 실제 전송)
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final btManager = context.read<BluetoothManager>();
+      _ledAnimator = LedSpeechAnimator(btManager);
+      _ledAnimator!.attach(AudioService());
+    });
   }
 
   @override
@@ -60,6 +71,7 @@ class _ControlScreenState extends State<ControlScreen>
     _motionRepeater.dispose();
     _yoloService.removeListener(_onYoloResultsChanged);
     _yoloService.dispose();
+    _ledAnimator?.dispose();
     super.dispose();
   }
 
@@ -131,14 +143,15 @@ class _ControlScreenState extends State<ControlScreen>
       _motionRepeater.stop(returnMotion: 1);
     } else {
       final dir = output.direction;
-      // 전진: 2→3→4 시퀀스, 후진: 9→10→11 시퀀스
+      // 전진: 2(3ms)→3(24ms)→4(8ms) 시퀀스, 후진: 9(3ms)→10(24ms)→11(8ms)
       if (dir == JoystickDirection.forward) {
-        _motionRepeater.startSequence([2, 3, 4]);
+        _motionRepeater.startSequence([2, 3, 4], delaysMs: [3, 24, 8]);
       } else if (dir == JoystickDirection.backward) {
-        _motionRepeater.startSequence([9, 10, 11]);
+        _motionRepeater.startSequence([9, 10, 11], delaysMs: [3, 24, 8]);
       } else {
+        // 좌우이동·회전: 30ms 간격
         final motionIndex = _joystickMotionMap[dir] ?? 1;
-        _motionRepeater.start(motionIndex, intervalMs: 50);
+        _motionRepeater.start(motionIndex, intervalMs: 30);
       }
     }
   }
@@ -205,7 +218,7 @@ class _ControlScreenState extends State<ControlScreen>
   void _openCustomVision() {
     Navigator.push(
       context,
-      MaterialPageRoute(builder: (_) => const CustomVisionScreen()),
+      MaterialPageRoute(builder: (_) => CustomVisionScreen(yoloService: _yoloService)),
     );
   }
 
@@ -224,7 +237,7 @@ class _ControlScreenState extends State<ControlScreen>
 
             // ─── 카메라 프리뷰 (46%) ───
             SizedBox(
-              height: size.height * 0.46,
+              height: size.height * 0.30,
               child: CameraPreviewWidget(
                 isYoloActive: _isYoloActive,
                 yoloService: _yoloService,
@@ -298,11 +311,16 @@ class _ControlScreenState extends State<ControlScreen>
   }
 
   Widget _buildHeader(BluetoothManager btManager) {
-    // 로봇 이름 동적으로 읽기
-    final robotName = context.watch<RobotNameService>().name;
+    // 연결된 로봇의 별명 또는 기본 이름
+    final nickSvc = context.watch<RobotNicknameService>();
+    final connectedMac = btManager.connectedDevice?.address ?? '';
+    final connectedName = btManager.connectedDevice?.name ?? '';
+    final displayTitle = connectedMac.isNotEmpty
+        ? nickSvc.displayName(connectedMac, connectedName)
+        : context.watch<RobotNameService>().name;
 
     return Container(
-      height: 48,
+      height: 52,
       padding: const EdgeInsets.symmetric(horizontal: 12),
       decoration: BoxDecoration(
         color: const Color(0xFF0D1F2D),
@@ -312,16 +330,28 @@ class _ControlScreenState extends State<ControlScreen>
       ),
       child: Row(
         children: [
-          // 로봇 아이콘 + 이름
-          const Icon(Icons.smart_toy, color: Colors.cyanAccent, size: 20),
-          const SizedBox(width: 6),
+          // 로봇 아바타 + 별명
+          if (connectedMac.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(right: 8),
+              child: RobotAvatarWidget(
+                mac: connectedMac,
+                service: nickSvc,
+                size: 36,
+              ),
+            )
+          else
+            const Padding(
+              padding: EdgeInsets.only(right: 6),
+              child: Icon(Icons.smart_toy, color: Colors.cyanAccent, size: 20),
+            ),
           Text(
-            robotName,
+            displayTitle,
             style: const TextStyle(
               color: Colors.white,
               fontSize: 14,
               fontWeight: FontWeight.bold,
-              letterSpacing: 1.5,
+              letterSpacing: 1.2,
             ),
           ),
           const SizedBox(width: 4),
@@ -434,7 +464,11 @@ class _ControlScreenState extends State<ControlScreen>
 
   Widget _buildStatusBar(BluetoothManager btManager) {
     final isConnected = btManager.isConnected;
-    final deviceName = btManager.connectedDevice?.name ?? '-';
+    final connMac = btManager.connectedDevice?.address ?? '';
+    final deviceName = isConnected && connMac.isNotEmpty
+        ? context.read<RobotNicknameService>().displayName(
+            connMac, btManager.connectedDevice?.name ?? '-')
+        : (btManager.connectedDevice?.name ?? '-');
 
     return Container(
       height: 30,
